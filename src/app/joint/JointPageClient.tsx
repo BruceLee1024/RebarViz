@@ -21,9 +21,9 @@ const JointViewer = dynamic(() => import('@/components/JointViewer'), {
 });
 
 const presetList = [
-  { key: 'middleBent', label: '中间节点·弯锚', color: 'bg-blue-50 text-blue-700' },
-  { key: 'middleStraight', label: '中间节点·直锚', color: 'bg-green-50 text-green-700' },
-  { key: 'side', label: '边节点·弯锚', color: 'bg-purple-50 text-purple-700' },
+  { key: 'middleBent', label: '中间节点·弯锚', dot: 'bg-blue-400' },
+  { key: 'middleStraight', label: '中间节点·直锚', dot: 'bg-green-400' },
+  { key: 'side', label: '边节点·弯锚', dot: 'bg-purple-400' },
 ] as const;
 
 const DEFAULT = { ...JOINT_PRESETS.middleBent };
@@ -68,10 +68,11 @@ export function JointPageClient() {
 
             <div className="mb-4">
               <label className="text-xs text-muted mb-2 block">快速示例</label>
-              <div className="flex flex-wrap gap-2">
-                {presetList.map(({ key, label, color }) => (
+              <div className="flex flex-wrap gap-1.5">
+                {presetList.map(({ key, label, dot }) => (
                   <button key={key} onClick={() => setParams({ ...JOINT_PRESETS[key] })}
-                    className={`px-2 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors hover:opacity-80 ${color}`}>
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
@@ -141,9 +142,9 @@ export function JointPageClient() {
           <div className="relative">
             <JointViewer params={params} />
             <button onClick={() => setShowAI(a => !a)}
-              className={`absolute top-3 right-3 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors flex items-center gap-1.5 shadow-sm ${showAI ? 'bg-accent text-white' : 'bg-white/90 text-muted hover:text-primary hover:bg-white'}`}>
+              className={`absolute top-3 right-3 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 shadow-sm ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100 hover:shadow-md'}`}>
               <Sparkles className="w-3.5 h-3.5" />
-              AI
+              AI 助手
             </button>
           </div>
         </div>

@@ -33,12 +33,12 @@ const BeamViewer = dynamic(() => import('@/components/BeamViewer'), {
 });
 
 const presetList = [
-  { key: 'simple', label: '简单梁', color: 'bg-blue-50 text-blue-700' },
-  { key: 'standard', label: '标准梁', color: 'bg-green-50 text-green-700' },
-  { key: 'complex', label: '复杂梁', color: 'bg-purple-50 text-purple-700' },
-  { key: 'haunchH', label: '水平加腋', color: 'bg-orange-50 text-orange-700' },
-  { key: 'haunchV', label: '竖向加腋', color: 'bg-cyan-50 text-cyan-700' },
-  { key: 'multiSpan', label: '多跨连续梁', color: 'bg-rose-50 text-rose-700' },
+  { key: 'simple', label: '简单梁', dot: 'bg-blue-400' },
+  { key: 'standard', label: '标准梁', dot: 'bg-green-400' },
+  { key: 'complex', label: '复杂梁', dot: 'bg-purple-400' },
+  { key: 'haunchH', label: '水平加腘', dot: 'bg-orange-400' },
+  { key: 'haunchV', label: '竖向加腘', dot: 'bg-cyan-400' },
+  { key: 'multiSpan', label: '多跨连续梁', dot: 'bg-rose-400' },
 ] as const;
 
 const DEFAULT = { ...BEAM_PRESETS.standard };
@@ -98,10 +98,11 @@ export function BeamPageClient() {
 
             <div className="mb-4">
               <label className="text-xs text-muted mb-2 block">快速示例</label>
-              <div className="flex flex-wrap gap-2">
-                {presetList.map(({ key, label, color }) => (
+              <div className="flex flex-wrap gap-1.5">
+                {presetList.map(({ key, label, dot }) => (
                   <button key={key} onClick={() => handlePreset(key)}
-                    className={`px-2 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors hover:opacity-80 ${color}`}>
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
@@ -197,18 +198,20 @@ export function BeamPageClient() {
 
           {/* Data tabs */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center border-b border-gray-100">
-              {DATA_TABS.map(t => (
-                <button key={t.key} onClick={() => setDataTab(t.key)}
-                  className={`px-4 py-2.5 text-xs font-medium transition-colors cursor-pointer ${dataTab === t.key ? 'text-accent border-b-2 border-accent bg-accent/5' : 'text-muted hover:text-primary hover:bg-gray-50'}`}>
-                  {t.label}
-                </button>
-              ))}
+            <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
+              <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
+                {DATA_TABS.map(t => (
+                  <button key={t.key} onClick={() => setDataTab(t.key)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
               {/* AI toggle */}
               <button onClick={() => setShowAI(a => !a)}
-                className={`ml-auto mr-2 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors flex items-center gap-1.5 ${showAI ? 'bg-accent text-white' : 'text-muted hover:text-primary hover:bg-gray-50'}`}>
+                className={`ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100'}`}>
                 <Sparkles className="w-3.5 h-3.5" />
-                AI
+                AI 助手
               </button>
             </div>
             <div className="p-5">

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Geist } from 'next/font/google';
 import './globals.css';
-import { Header, MobileBottomNav } from '@/components/Header';
+import { Header } from '@/components/Header';
 
 const geist = Geist({ variable: '--font-geist', subsets: ['latin'] });
 
@@ -17,10 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN">
         <body className={`${geist.variable} font-sans antialiased bg-gray-50 text-gray-800`}>
         <Header />
-        <div className="pb-14 sm:pb-0">
-          {children}
-        </div>
-        <MobileBottomNav />
+        {children}
       </body>
     </html>
   );

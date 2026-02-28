@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Columns3, Box, LayoutGrid, GitMerge, ChevronLeft, PanelLeftOpen, Settings, Wallpaper } from 'lucide-react';
+import { Columns3, Box, LayoutGrid, GitMerge, ChevronLeft, ChevronRight, PanelLeftOpen, Settings, Wallpaper } from 'lucide-react';
 import { useState } from 'react';
 
 const NAV = [
@@ -113,7 +113,7 @@ export function Sidebar() {
           className="flex items-center justify-center py-3 border-t border-gray-200 text-gray-400 hover:text-gray-600 cursor-pointer transition-colors"
           aria-label={collapsed ? '隐藏侧边栏' : '收起侧边栏'}
         >
-          {collapsed ? <ChevronLeft className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+          {collapsed ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 rotate-180" />}
         </button>
       </aside>
     </>

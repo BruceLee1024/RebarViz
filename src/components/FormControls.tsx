@@ -36,13 +36,13 @@ export function NumField({ label, value, onChange, error, min, max }: {
 
 export function Legend({ items }: { items: { color: string; label: string; opacity?: number }[] }) {
   return (
-    <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-      <h2 className="text-sm font-semibold text-primary mb-3">图例</h2>
-      <div className="space-y-2 text-sm">
+    <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+      <h2 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2.5">图例</h2>
+      <div className="grid grid-cols-1 gap-1.5">
         {items.map(({ color, label, opacity }) => (
-          <div key={label} className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-sm shrink-0" style={{ background: color, opacity: opacity ?? 1 }} />
-            <span className="text-gray-600">{label}</span>
+          <div key={label} className="flex items-center gap-2 py-0.5">
+            <div className="w-2.5 h-2.5 rounded-sm shrink-0 ring-1 ring-black/5" style={{ background: color, opacity: opacity ?? 1 }} />
+            <span className="text-xs text-gray-600">{label}</span>
           </div>
         ))}
       </div>
@@ -84,10 +84,10 @@ export function Section({ title, defaultOpen = false, children }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="mt-3 rounded-lg bg-gray-50/80 border border-gray-100">
+    <div className="mt-3 rounded-lg bg-gray-50/60 border border-gray-100">
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between px-3 py-2 cursor-pointer group"
+        className="w-full flex items-center justify-between px-3 py-2.5 cursor-pointer group"
         type="button"
       >
         <span className="text-xs font-semibold text-primary">{title}</span>
