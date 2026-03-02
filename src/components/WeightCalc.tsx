@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
-import { Download, List, BarChart3, Weight, ChevronDown } from 'lucide-react';
+import { Download, List, BarChart3, Weight, ChevronDown, Printer, Copy, Check } from 'lucide-react';
 import type { CalcResult, CalcItem, FormulaStep } from '@/lib/calc';
 import { GRADE_MAP } from '@/lib/rebar';
+import { exportToCSV, exportToPrintHTML, copyToClipboard, type ExportMeta } from '@/lib/export';
 
 interface SummaryRow {
   grade: string;
@@ -42,23 +43,6 @@ function totalWeightKg(items: CalcItem[]): number {
   return items.reduce((s, it) => s + it.weightKg, 0);
 }
 
-function exportCSV(items: CalcItem[], summary: SummaryRow[], id?: string) {
-  const bom = '\uFEFF';
-  const lines: string[] = [id ? `钢筋下料表 - ${id}` : '钢筋下料表', ''];
-  lines.push('名称,规格,钢种,直径(mm),根数,单根长度(m),重量(kg)');
-  for (const it of items)
-    lines.push(`${it.name},${it.spec},${GRADE_MAP[it.grade] || it.grade},${it.diameter},${it.count},${it.lengthM.toFixed(2)},${it.weightKg.toFixed(2)}`);
-  lines.push('', '按规格汇总', '钢种,直径(mm),总根数,总长度(m),总重量(kg)');
-  for (const r of summary)
-    lines.push(`${GRADE_MAP[r.grade] || r.grade},${r.diameter},${r.totalCount},${r.totalLengthM.toFixed(2)},${r.totalWeightKg.toFixed(2)}`);
-  lines.push(`合计,,,,${summary.reduce((s, r) => s + r.totalWeightKg, 0).toFixed(2)}`);
-
-  const blob = new Blob([bom + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${id || '钢筋'}_下料表.csv`; a.click();
-  URL.revokeObjectURL(url);
-}
 
 function FormulaBlock({ steps }: { steps: FormulaStep[] }) {
   return (
@@ -79,14 +63,25 @@ function FormulaBlock({ steps }: { steps: FormulaStep[] }) {
   );
 }
 
-export function WeightCalc({ result, beamId }: { result: CalcResult; beamId?: string }) {
+export function WeightCalc({ result, beamId, meta }: { result: CalcResult; beamId?: string; meta?: ExportMeta }) {
   const [view, setView] = useState<'detail' | 'summary'>('detail');
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
   const summary = useMemo(() => buildSummary(result.items), [result.items]);
   const total = useMemo(() => totalWeightKg(result.items), [result.items]);
   const maxWeight = useMemo(() => Math.max(...result.items.map(it => it.weightKg), 1), [result.items]);
   const maxSummaryWeight = useMemo(() => Math.max(...summary.map(r => r.totalWeightKg), 1), [summary]);
   const toggleExpand = useCallback((i: number) => setExpandedIdx(prev => prev === i ? null : i), []);
+  
+  const exportMeta: ExportMeta = meta || { id: beamId };
+  
+  const handleCopy = useCallback(async () => {
+    const ok = await copyToClipboard(result, exportMeta);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [result, exportMeta]);
 
   return (
     <div>
@@ -121,10 +116,20 @@ export function WeightCalc({ result, beamId }: { result: CalcResult; beamId?: st
             汇总
           </button>
           <div className="w-px h-4 bg-gray-200 mx-1" />
-          <button onClick={() => exportCSV(result.items, summary, beamId)}
+          <button onClick={handleCopy}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors">
+            {copied ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
+            {copied ? '已复制' : '复制'}
+          </button>
+          <button onClick={() => exportToCSV(result, exportMeta)}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors">
             <Download className="w-3 h-3" />
-            导出
+            CSV
+          </button>
+          <button onClick={() => exportToPrintHTML(result, exportMeta)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors">
+            <Printer className="w-3 h-3" />
+            打印
           </button>
         </div>
       </div>

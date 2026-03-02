@@ -6,8 +6,7 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import type { ShearWallParams, RebarMeshInfo } from '@/lib/types';
 import { parseSlabRebar, parseRebar, parseStirrup, gradeLabel } from '@/lib/rebar';
-
-const S = 0.001;
+import { S } from '@/lib/constants';
 
 function CameraController({ targetPosition }: { targetPosition: [number, number, number] | null }) {
   const { camera } = useThree();

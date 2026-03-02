@@ -18,13 +18,21 @@ import { CONCRETE_GRADES, SEISMIC_GRADES } from '@/lib/anchor';
 import { AISidebar } from '@/components/AISidebar';
 import { RebarRatioCard } from '@/components/RebarRatioCard';
 import { buildBeamContext } from '@/lib/ai-context';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, HelpCircle } from 'lucide-react';
+import { Tutorial, resetTutorial } from '@/components/Tutorial';
+import { checkBeamCompliance } from '@/lib/compliance';
+import { CompliancePanel, ComplianceBadge } from '@/components/CompliancePanel';
+import { useHistory } from '@/lib/useHistory';
+import { HistoryPanel } from '@/components/HistoryPanel';
+import { ComparePanel } from '@/components/ComparePanel';
 
 const DATA_TABS = [
   { key: 'section', label: '截面图' },
   { key: 'ratio', label: '配筋率' },
+  { key: 'compliance', label: '规范校验' },
   { key: 'weight', label: '用量估算' },
   { key: 'bbs', label: '弯折详图' },
+  { key: 'compare', label: '方案对比' },
 ] as const;
 
 const BeamViewer = dynamic(() => import('@/components/BeamViewer'), {
@@ -57,6 +65,7 @@ export function BeamPageClient() {
   const update = (patch: Partial<BeamParams>) => setParams(p => ({ ...p, ...patch }));
   const calcResult = useMemo(() => calcBeam(params), [params]);
   const ratioResult = useMemo(() => calcBeamRebarRatios(params), [params]);
+  const complianceResults = useMemo(() => checkBeamCompliance(params), [params]);
   const aiContext = useMemo(() => buildBeamContext(params), [params]);
 
   // Validation
@@ -81,9 +90,53 @@ export function BeamPageClient() {
   };
   const [dataTab, setDataTab] = useState<typeof DATA_TABS[number]['key']>('section');
   const [showAI, setShowAI] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
+
+  // 历史记录
+  const {
+    history,
+    favorites,
+    addToHistory,
+    addToFavorites,
+    removeFromFavorites,
+    removeFromHistory,
+    clearHistory,
+    isFavorite,
+  } = useHistory<BeamParams>('beam');
+
+  // 参数变化时自动保存历史（节流）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      addToHistory(params, params.id);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [params, addToHistory]);
+
+  // 对比方案
+  const [compareParams, setCompareParams] = useState<BeamParams | null>(null);
+  const [compareLabel, setCompareLabel] = useState<string>('历史方案');
+
+  const handleSelectHistory = (id: string, fromFavorites: boolean) => {
+    const list = fromFavorites ? favorites : history;
+    const item = list.find(i => i.id === id);
+    if (item) {
+      setParams(item.params as BeamParams);
+    }
+  };
+
+  const handleSelectForCompare = (id: string, fromFavorites: boolean) => {
+    const list = fromFavorites ? favorites : history;
+    const item = list.find(i => i.id === id);
+    if (item) {
+      setCompareParams(item.params as BeamParams);
+      setCompareLabel(item.name);
+      setDataTab('compare');
+    }
+  };
 
   return (
     <main className="px-4 py-4">
+      <Tutorial componentType="beam" forceShow={showTutorial} onComplete={() => setShowTutorial(false)} />
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* 左栏：参数输入 */}
         <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-[60px] lg:max-h-[calc(100vh-76px)] lg:overflow-y-auto lg:scrollbar-thin">
@@ -91,6 +144,13 @@ export function BeamPageClient() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-primary">参数输入</h2>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { resetTutorial(); setShowTutorial(true); }}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors"
+                  title="查看教程"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                </button>
                 <ResetButton onClick={() => setParams(DEFAULT)} />
                 <ShareButton params={params} />
               </div>
@@ -189,6 +249,21 @@ export function BeamPageClient() {
               { color: '#E67E22', label: '加腋附加筋' },
             ] : []),
           ]} />
+
+          {/* 历史记录与收藏 */}
+          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+            <h3 className="text-sm font-semibold text-primary mb-3">历史记录</h3>
+            <HistoryPanel
+              history={history}
+              favorites={favorites}
+              isFavorite={isFavorite(params)}
+              onSelect={handleSelectHistory}
+              onAddFavorite={() => addToFavorites(params, params.id)}
+              onRemoveFavorite={removeFromFavorites}
+              onRemoveHistory={removeFromHistory}
+              onClearHistory={clearHistory}
+            />
+          </div>
         </div>
 
         {/* 中栏：3D模型 + 数据 tab */}
@@ -200,10 +275,11 @@ export function BeamPageClient() {
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
             <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
               <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
-                {DATA_TABS.map(t => (
+              {DATA_TABS.map(t => (
                   <button key={t.key} onClick={() => setDataTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
                     {t.label}
+                    {t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
                   </button>
                 ))}
               </div>
@@ -227,8 +303,47 @@ export function BeamPageClient() {
                 </>
               )}
               {dataTab === 'ratio' && <RebarRatioCard ratios={ratioResult} />}
+              {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
               {dataTab === 'weight' && <WeightCalc result={calcResult} beamId={params.id} />}
               {dataTab === 'bbs' && <BarBendingSchedule params={params} />}
+              {dataTab === 'compare' && (
+                <div className="space-y-4">
+                  {compareParams ? (
+                    <ComparePanel
+                      paramsA={compareParams}
+                      paramsB={params}
+                      labelA={compareLabel}
+                      labelB="当前方案"
+                    />
+                  ) : (
+                    <div className="text-center py-8">
+                      <p className="text-sm text-gray-500 mb-3">从历史记录或收藏中选择一个方案进行对比</p>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {[...favorites, ...history].slice(0, 6).map(item => (
+                          <button
+                            key={item.id}
+                            onClick={() => handleSelectForCompare(item.id, favorites.some(f => f.id === item.id))}
+                            className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg cursor-pointer transition-colors"
+                          >
+                            {item.name}
+                          </button>
+                        ))}
+                      </div>
+                      {history.length === 0 && favorites.length === 0 && (
+                        <p className="text-xs text-gray-400 mt-2">暂无历史记录，修改参数后会自动保存</p>
+                      )}
+                    </div>
+                  )}
+                  {compareParams && (
+                    <button
+                      onClick={() => setCompareParams(null)}
+                      className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+                    >
+                      清除对比方案
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

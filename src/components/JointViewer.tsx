@@ -7,8 +7,7 @@ import * as THREE from 'three';
 import type { JointParams, RebarMeshInfo } from '@/lib/types';
 import { parseRebar, parseStirrup, gradeLabel } from '@/lib/rebar';
 import { calcLaE, calcBendLength } from '@/lib/anchor';
-
-const S = 0.001;
+import { S } from '@/lib/constants';
 
 /* ---- Clickable mesh wrapper ---- */
 function Clickable({ info, selected, onSelect, children, ...props }: {

@@ -6,8 +6,8 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import type { SlabParams, RebarMeshInfo } from '@/lib/types';
 import { parseSlabRebar, gradeLabel } from '@/lib/rebar';
+import { S } from '@/lib/constants';
 
-const S = 0.001;
 const SLAB_W = 3.0;
 const SLAB_D = 3.0;
 

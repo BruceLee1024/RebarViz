@@ -3,367 +3,41 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import { Canvas, useThree, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Line } from '@react-three/drei';
+import { Camera, Keyboard } from 'lucide-react';
 import * as THREE from 'three';
 import type { BeamParams, RebarMeshInfo } from '@/lib/types';
 import { parseRebar, parseStirrup, parseSideBar, parseTieBar, autoTieBar, tieBarToString, gradeLabel } from '@/lib/rebar';
 import { calcSupportRebarLength, calcBeamEndAnchor, calcLaE, calcLlE } from '@/lib/anchor';
 import { RebarDetailPanel } from './RebarDetailPanel';
-
-const S = 0.001;
-const COLOR_REBAR = '#C0392B';
-const COLOR_REBAR_HI = '#E74C3C';
-const COLOR_STIRRUP = '#27AE60';
-const COLOR_STIRRUP_HI = '#2ECC71';
-const COLOR_STIRRUP_DENSE = '#1E8449';
-const COLOR_STIRRUP_DENSE_HI = '#27AE60';
-const COLOR_STIRRUP_NORMAL = '#7DCEA0';
-const COLOR_STIRRUP_NORMAL_HI = '#A9DFBF';
-const COLOR_SUPPORT = '#8E44AD';
-const COLOR_SUPPORT_HI = '#9B59B6';
-const COLOR_COLUMN = '#7F8C8D';
-const COLOR_ERECTION = '#F39C12';
-const COLOR_ERECTION_HI = '#F1C40F';
-const COLOR_HAUNCH = '#E67E22';
-const COLOR_HAUNCH_HI = '#F39C12';
-const COLOR_SIDEBAR = '#2980B9';
-const COLOR_SIDEBAR_HI = '#3498DB';
-const COLOR_TIEBAR = '#1ABC9C';
-const COLOR_TIEBAR_HI = '#16A085';
-
-function RebarBar({ position, length, diameter, color, hiColor, info, selected, onSelect, renderOrder = 1 }: {
-  position: [number, number, number]; length: number; diameter: number;
-  color: string; hiColor: string; info: RebarMeshInfo;
-  selected: boolean; onSelect: (info: RebarMeshInfo | null) => void;
-  renderOrder?: number;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
-    e.stopPropagation();
-    onSelect(selected ? null : info);
-  }, [selected, info, onSelect]);
-  const activeColor = selected ? hiColor : hovered ? hiColor : color;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
-
-  // 优化：使用共享几何体减少内存占用
-  const geometry = useMemo(() => new THREE.CylinderGeometry(
-    diameter * S / 2, diameter * S / 2, length, 12
-  ), [diameter, length]);
-
-  return (
-    <mesh position={position} rotation={[0, 0, Math.PI / 2]}
-      renderOrder={renderOrder}
-      onClick={handleClick}
-      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-      onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto'; }}
-      scale={[scale, 1, scale]}>
-      <primitive object={geometry} attach="geometry" />
-      <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-    </mesh>
-  );
-}
-
-function StirrupRing({ x, width, height, diameter, color, hiColor, info, selected, onSelect, cover, legs = 2, cornerRadius, barZPositions }: {
-  x: number; width: number; height: number; diameter: number;
-  color: string; hiColor: string; info: RebarMeshInfo;
-  selected: boolean; onSelect: (info: RebarMeshInfo | null) => void;
-  cover: number;
-  legs?: number; // 箍筋肢数
-  cornerRadius?: number; // 转角弯折半径（箍筋中心线）
-  barZPositions?: number[]; // 纵筋 Z 坐标，用于避开拉筋
-}) {
-  const [hovered, setHovered] = useState(false);
-  const curve = useMemo(() => {
-    const w2 = width / 2, h2 = height / 2;
-    const dS = diameter * S;
-    const innerBendR = Math.max(2 * dS, 0.010);
-    const r = cornerRadius ?? (innerBendR + dS / 2);
-    const rC = Math.min(r, w2 * 0.45, h2 * 0.45);
-
-    // 用 THREE.Path 的 absarc 生成精确圆弧，再均匀采样
-    const path2d = new THREE.Path();
-    path2d.moveTo(-w2 + rC, -h2);
-    // 下边 → 右下角圆弧
-    path2d.lineTo(w2 - rC, -h2);
-    path2d.absarc(w2 - rC, -h2 + rC, rC, -Math.PI / 2, 0, false);
-    // 右边 → 右上角圆弧
-    path2d.lineTo(w2, h2 - rC);
-    path2d.absarc(w2 - rC, h2 - rC, rC, 0, Math.PI / 2, false);
-    // 上边 → 左上角圆弧
-    path2d.lineTo(-w2 + rC, h2);
-    path2d.absarc(-w2 + rC, h2 - rC, rC, Math.PI / 2, Math.PI, false);
-    // 左边 → 左下角圆弧
-    path2d.lineTo(-w2, -h2 + rC);
-    path2d.absarc(-w2 + rC, -h2 + rC, rC, Math.PI, Math.PI * 1.5, false);
-
-    // 均匀采样 160 个点，映射到 YZ 平面
-    const pts2d = path2d.getSpacedPoints(160);
-    const pts3d = pts2d.map(p => new THREE.Vector3(0, p.y, p.x));
-    // centripetal 参数化紧贴控制点，不会过冲
-    return new THREE.CatmullRomCurve3(pts3d, true, 'centripetal');
-  }, [width, height, diameter, cornerRadius]);
-  const activeColor = selected ? hiColor : hovered ? hiColor : color;
-
-  // 135° hooks at top-left corner (22G101: 抗震箍筋弯钩 135°, 直段≥10d≥75mm)
-  // 精确圆弧采样，避免 CatmullRom 过冲
-  const hookCurves = useMemo(() => {
-    const dS = diameter * S;
-    const hookLen = Math.max(10 * dS, 0.075); // 10d, min 75mm
-    const w2 = width / 2, h2 = height / 2;
-    const R = Math.max(2.5 * dS, 0.006); // 弯钩弯折半径 (center-line)
-    const c45 = Math.SQRT1_2;
-    const innerBendR = Math.max(2 * dS, 0.010);
-    const rC = Math.min(cornerRadius ?? (innerBendR + dS / 2), w2 * 0.45, h2 * 0.45);
-    const arcSteps = 12;
-
-    // ── Hook 1: 沿上边向左 → 135°弧 → 尾部 45° 向下向右(内) ──
-    // 圆弧圆心在上边下方: (h2-R, Zc1)
-    const Zc1 = -w2 + rC;
-    const Yc1 = h2 - R;
-    const h1pts: THREE.Vector3[] = [];
-    // 直段: 沿上边接近弯折点
-    for (let t = 0; t <= 1; t += 0.25) {
-      h1pts.push(new THREE.Vector3(0, h2, Zc1 + R * 2 * (1 - t)));
-    }
-    // 135° 圆弧: 从向左弯至向下向右
-    for (let i = 0; i <= arcSteps; i++) {
-      const a = (3 * Math.PI / 4) * i / arcSteps;
-      h1pts.push(new THREE.Vector3(0, Yc1 + R * Math.cos(a), Zc1 - R * Math.sin(a)));
-    }
-    // 尾部直段: 45° 向下向右(进入混凝土核心)
-    const endY1 = Yc1 + R * Math.cos(3 * Math.PI / 4);
-    const endZ1 = Zc1 - R * Math.sin(3 * Math.PI / 4);
-    for (let t = 0.1; t <= 1; t += 0.1) {
-      h1pts.push(new THREE.Vector3(0, endY1 - hookLen * c45 * t, endZ1 + hookLen * c45 * t));
-    }
-
-    // ── Hook 2: 沿左边向上 → 135°弧 → 尾部 45° 向下向右(内) ──
-    // 圆弧圆心在左边右侧: (Yc2, -w2+R)
-    const Yc2 = h2 - R;
-    const h2pts: THREE.Vector3[] = [];
-    // 直段: 沿左边向上接近弯折点
-    for (let t = 0; t <= 1; t += 0.25) {
-      h2pts.push(new THREE.Vector3(0, Yc2 - R * 2 * (1 - t), -w2));
-    }
-    // 135° 圆弧: 从向上弯至向下向右
-    for (let i = 0; i <= arcSteps; i++) {
-      const a = (3 * Math.PI / 4) * i / arcSteps;
-      h2pts.push(new THREE.Vector3(0, Yc2 + R * Math.sin(a), -w2 + R * (1 - Math.cos(a))));
-    }
-    // 尾部直段: 45° 向下向右
-    const endY2 = Yc2 + R * Math.sin(3 * Math.PI / 4);
-    const endZ2 = -w2 + R * (1 - Math.cos(3 * Math.PI / 4));
-    for (let t = 0.1; t <= 1; t += 0.1) {
-      h2pts.push(new THREE.Vector3(0, endY2 - hookLen * c45 * t, endZ2 + hookLen * c45 * t));
-    }
-
-    return [
-      new THREE.CatmullRomCurve3(h1pts, false, 'centripetal'),
-      new THREE.CatmullRomCurve3(h2pts, false, 'centripetal'),
-    ];
-  }, [width, height, diameter, cornerRadius]);
-
-  // 多肢箍中间拉筋位置 — 放在相邻纵筋的中间，避免穿过纵筋
-  const legPositions = useMemo(() => {
-    if (legs <= 2) return [];
-    const innerLegs = legs - 2; // 内部拉筋数
-    if (barZPositions && barZPositions.length >= 2) {
-      // 收集所有不重复的 Z 坐标并排序
-      const sorted = [...new Set(barZPositions)].sort((a, b) => a - b);
-      // 计算相邻纵筋的中点
-      const gaps: number[] = [];
-      for (let i = 0; i < sorted.length - 1; i++) {
-        gaps.push((sorted[i] + sorted[i + 1]) / 2);
-      }
-      // 从间隔中均匀选取 innerLegs 根
-      if (gaps.length >= innerLegs) {
-        const step = gaps.length / innerLegs;
-        return Array.from({ length: innerLegs }, (_, i) =>
-          gaps[Math.min(Math.round(step * i + step / 2 - 0.5), gaps.length - 1)]
-        );
-      }
-      return gaps.slice(0, innerLegs);
-    }
-    // 无纵筋信息时退化为均匀分布
-    const spacing = width / (legs - 1);
-    const positions: number[] = [];
-    for (let i = 1; i <= innerLegs; i++) {
-      positions.push(-width / 2 + i * spacing);
-    }
-    return positions;
-  }, [legs, width, barZPositions]);
-
-  return (
-    <group position={[x, height / 2 + cover, 0]}
-      onClick={(e) => { e.stopPropagation(); onSelect(selected ? null : info); }}
-      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-      onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto'; }}>
-      {/* 外围箍筋 */}
-      <mesh>
-        <tubeGeometry args={[curve, 200, diameter * S / 2, 8, true]} />
-        <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-      </mesh>
-      
-      {/* 箍筋弯钩 (135° hooks) */}
-      {hookCurves.map((hc, hi) => (
-        <mesh key={`hook${hi}`}>
-          <tubeGeometry args={[hc, 40, diameter * S / 2, 6, false]} />
-          <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-        </mesh>
-      ))}
-      {/* 中间拉筋（多肢箍） */}
-      {legPositions.map((z, i) => (
-        <mesh key={`leg${i}`} position={[0, 0, z]}>
-          <cylinderGeometry args={[diameter * S / 2, diameter * S / 2, height, 8]} />
-          <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/* Clickable tube mesh for tie bars */
-function TieBarMesh({ position, curve, radius, info, selected, onSelect }: {
-  position: [number, number, number]; curve: THREE.CatmullRomCurve3; radius: number;
-  info: RebarMeshInfo; selected: boolean; onSelect: (info: RebarMeshInfo | null) => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const activeColor = selected ? COLOR_TIEBAR_HI : hovered ? COLOR_TIEBAR_HI : COLOR_TIEBAR;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
-  return (
-    <mesh position={position}
-      scale={[scale, scale, scale]}
-      onClick={(e) => { e.stopPropagation(); onSelect(selected ? null : info); }}
-      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-      onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto'; }}>
-      <tubeGeometry args={[curve, 48, radius, 6, false]} />
-      <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6}
-        emissive={selected ? COLOR_TIEBAR_HI : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-    </mesh>
-  );
-}
-
-/* Bent rebar end - shows the 90° bend at column for anchor
- * xDir: 1 = 向右伸入右柱, -1 = 向左伸入左柱
- * position 应放在梁端面（柱内侧面）
- */
-function BentRebarEnd({ position, straightLen, bendLen, diameter, direction, color, xDir = 1 }: {
-  position: [number, number, number]; straightLen: number; bendLen: number; diameter: number;
-  direction: 'down' | 'up'; color: string;
-  xDir?: number;
-}) {
-  const r = diameter * S / 2;
-  const curve = useMemo(() => {
-    const bendRadius = Math.min(4 * diameter * S, straightLen * 0.3);
-    // 直段长度包含弯折半径，所以真正的直线部分 = straightLen - bendRadius
-    const linePart = Math.max(straightLen - bendRadius, 0);
-    const pts: THREE.Vector3[] = [];
-    // 水平直段（从streamface伸入柱内）
-    for (let t = 0; t <= 1; t += 0.1)
-      pts.push(new THREE.Vector3(xDir * t * linePart, 0, 0));
-    // 90° 弯折弧
-    const sign = direction === 'down' ? -1 : 1;
-    for (let a = 0; a <= Math.PI / 2; a += Math.PI / 20) {
-      pts.push(new THREE.Vector3(
-        xDir * (linePart + bendRadius * Math.sin(a)),
-        sign * bendRadius * (1 - Math.cos(a)),
-        0
-      ));
-    }
-    // 竖直弯折段
-    const bendEnd = new THREE.Vector3(
-      xDir * (linePart + bendRadius), sign * bendRadius, 0
-    );
-    for (let t = 0.1; t <= 1; t += 0.1) {
-      pts.push(new THREE.Vector3(bendEnd.x, bendEnd.y + sign * t * bendLen, 0));
-    }
-    return new THREE.CatmullRomCurve3(pts, false);
-  }, [straightLen, bendLen, diameter, direction, xDir]);
-
-  return (
-    <mesh position={position}>
-      <tubeGeometry args={[curve, 32, r, 8, false]} />
-      <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-    </mesh>
-  );
-}
-
-/* Column stub at beam end */
-function ColumnStub({ x, width, beamH, depth, haunchDepth = 0 }: {
-  x: number; width: number; beamH: number; depth: number; haunchDepth?: number;
-}) {
-  // Column extends from above beam top to below haunch bottom
-  const topExt = beamH * 0.3; // extend above beam
-  const botExt = haunchDepth + beamH * 0.3; // extend below beam (+ haunch)
-  const stubH = beamH + topExt + botExt;
-  const centerY = beamH / 2 + (topExt - botExt) / 2;
-  return (
-    <group position={[x, centerY, 0]}>
-      <mesh>
-        <boxGeometry args={[width, stubH, depth]} />
-        <meshPhysicalMaterial color={COLOR_COLUMN} transparent opacity={0.12} side={THREE.DoubleSide} depthWrite={false} roughness={0.8} />
-      </mesh>
-      <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(width, stubH, depth)]} />
-        <lineBasicMaterial color="#7F8C8D" transparent opacity={0.5} />
-      </lineSegments>
-    </group>
-  );
-}
-
-function SectionCutPlane({ position, height, width }: { position: number; height: number; width: number }) {
-  const hw = width * 0.75, hh = height * 0.75;
-  const edgePoints = useMemo(() => {
-    const pts = [
-      new THREE.Vector3(-hw, -hh, 0),
-      new THREE.Vector3( hw, -hh, 0),
-      new THREE.Vector3( hw,  hh, 0),
-      new THREE.Vector3(-hw,  hh, 0),
-    ];
-    return new THREE.BufferGeometry().setFromPoints(pts);
-  }, [hw, hh]);
-
-  return (
-    <group position={[position, height / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
-      <mesh>
-        <planeGeometry args={[width * 1.5, height * 1.5]} />
-        <meshBasicMaterial color="#3B82F6" transparent opacity={0.35} side={THREE.DoubleSide} depthWrite={false} />
-      </mesh>
-      <lineLoop geometry={edgePoints}>
-        <lineBasicMaterial color="#2563EB" linewidth={2} />
-      </lineLoop>
-    </group>
-  );
-}
-
-/* Sloped rebar bar for haunch additional bars (附加筋) */
-function SlopedRebarBar({ start, end, diameter, color, hiColor, info, selected, onSelect }: {
-  start: [number, number, number]; end: [number, number, number]; diameter: number;
-  color: string; hiColor: string; info: RebarMeshInfo;
-  selected: boolean; onSelect: (info: RebarMeshInfo | null) => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const { midPos, length, rotation } = useMemo(() => {
-    const dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
-    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const mid: [number, number, number] = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, (start[2] + end[2]) / 2];
-    const angle = Math.atan2(dy, dx);
-    return { midPos: mid, length: len, rotation: [0, 0, angle - Math.PI / 2] as [number, number, number] };
-  }, [start, end]);
-  const activeColor = selected ? hiColor : hovered ? hiColor : color;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
-
-  return (
-    <mesh position={midPos} rotation={rotation}
-      renderOrder={2}
-      onClick={(e) => { e.stopPropagation(); onSelect(selected ? null : info); }}
-      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-      onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto'; }}
-      scale={[scale, 1, scale]}>
-      <cylinderGeometry args={[diameter * S / 2, diameter * S / 2, length, 12]} />
-      <meshStandardMaterial color={activeColor} roughness={0.4} metalness={0.6} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-    </mesh>
-  );
-}
+import {
+  S,
+  COLOR_REBAR, COLOR_REBAR_HI,
+  COLOR_STIRRUP, COLOR_STIRRUP_HI,
+  COLOR_STIRRUP_DENSE, COLOR_STIRRUP_DENSE_HI,
+  COLOR_STIRRUP_NORMAL, COLOR_STIRRUP_NORMAL_HI,
+  COLOR_SUPPORT, COLOR_SUPPORT_HI,
+  COLOR_ERECTION, COLOR_ERECTION_HI,
+  COLOR_HAUNCH, COLOR_HAUNCH_HI,
+  COLOR_SIDEBAR, COLOR_SIDEBAR_HI,
+  COLOR_TIEBAR, COLOR_TIEBAR_HI,
+  COLOR_COLUMN,
+  BEAM_CONSTRUCTION_STEPS,
+} from '@/lib/constants';
+import { layoutBars, formatAnchorDesc } from '@/lib/layout';
+import {
+  RebarBar,
+  SlopedRebarBar,
+  StirrupRing,
+  BentRebarEnd,
+  TieBarMesh,
+  DimLine,
+  VDimLine,
+  DenseZoneMark,
+  ColumnStub,
+  SectionCutPlane,
+} from './three';
+import { useKeyboard, createViewerBindings, formatShortcut } from '@/lib/useKeyboard';
+import { KeyboardHelp } from './KeyboardHelp';
 
 /* Haunch (加腋) concrete geometry */
 function HaunchShape({ beamLen, beamH, beamB, haunchLen, haunchH, haunchType, side, opacity }: {
@@ -489,158 +163,6 @@ function CameraController({ targetPosition }: { targetPosition: [number, number,
   }, [targetPosition, camera]);
   return null;
 }
-
-/* 加密区分界线 (仅竖向虚线，无浮动标签) */
-function DenseZoneMark({ x, beamH }: { x: number; beamH: number }) {
-  const points = useMemo(() => [
-    [x, -beamH * 0.08, 0] as [number, number, number],
-    [x, beamH * 1.08, 0] as [number, number, number],
-  ], [x, beamH]);
-  return <Line points={points} color="#F59E0B" lineWidth={1} dashed dashSize={0.025} gapSize={0.015} opacity={0.6} transparent />;
-}
-
-/* 工程标注线组件: 界线 + 尺寸线 + 箭头 + 文字 */
-function DimLine({ start, end, offset, label, color = '#2563EB', tickLen = 0.04, z = 0 }: {
-  start: number; end: number; offset: number; label: string;
-  color?: string; tickLen?: number; z?: number;
-}) {
-  // offset > 0 向上偏移, < 0 向下偏移
-  const dir = offset > 0 ? 1 : -1;
-  const absOff = Math.abs(offset);
-  const mid = (start + end) / 2;
-  const arrowSize = Math.min(0.025, Math.abs(end - start) * 0.15);
-
-  return (
-    <group>
-      {/* 左界线 (extension line) */}
-      <Line points={[[start, dir * (absOff - tickLen), z], [start, dir * (absOff + tickLen), z]]} color={color} lineWidth={1} />
-      {/* 右界线 */}
-      <Line points={[[end, dir * (absOff - tickLen), z], [end, dir * (absOff + tickLen), z]]} color={color} lineWidth={1} />
-      {/* 尺寸线 (dimension line) */}
-      <Line points={[[start, dir * absOff, z], [end, dir * absOff, z]]} color={color} lineWidth={1.5} />
-      {/* 左箭头 */}
-      <Line points={[
-        [start + arrowSize, dir * (absOff + arrowSize * 0.5), z],
-        [start, dir * absOff, z],
-        [start + arrowSize, dir * (absOff - arrowSize * 0.5), z],
-      ]} color={color} lineWidth={1.5} />
-      {/* 右箭头 */}
-      <Line points={[
-        [end - arrowSize, dir * (absOff + arrowSize * 0.5), z],
-        [end, dir * absOff, z],
-        [end - arrowSize, dir * (absOff - arrowSize * 0.5), z],
-      ]} color={color} lineWidth={1.5} />
-      {/* 文字标注 */}
-      <Html position={[mid, dir * absOff, z]} center distanceFactor={8}>
-        <div style={{ color, fontSize: 9, fontWeight: 600, whiteSpace: 'nowrap', textShadow: '0 0 4px rgba(255,255,255,0.9)', pointerEvents: 'none' }}>
-          {label}
-        </div>
-      </Html>
-    </group>
-  );
-}
-
-/* 竖向标注线 */
-function VDimLine({ x, bottom, top, offset, label, color = '#2563EB', tickLen = 0.04, z = 0 }: {
-  x: number; bottom: number; top: number; offset: number; label: string;
-  color?: string; tickLen?: number; z?: number;
-}) {
-  const dir = offset > 0 ? 1 : -1;
-  const absOff = Math.abs(offset);
-  const mid = (bottom + top) / 2;
-  const arrowSize = Math.min(0.025, Math.abs(top - bottom) * 0.15);
-  const xOff = x + dir * absOff;
-
-  return (
-    <group>
-      {/* 上界线 */}
-      <Line points={[[xOff - tickLen, top, z], [xOff + tickLen, top, z]]} color={color} lineWidth={1} />
-      {/* 下界线 */}
-      <Line points={[[xOff - tickLen, bottom, z], [xOff + tickLen, bottom, z]]} color={color} lineWidth={1} />
-      {/* 尺寸线 */}
-      <Line points={[[xOff, bottom, z], [xOff, top, z]]} color={color} lineWidth={1.5} />
-      {/* 下箭头 */}
-      <Line points={[
-        [xOff - arrowSize * 0.5, bottom + arrowSize, z],
-        [xOff, bottom, z],
-        [xOff + arrowSize * 0.5, bottom + arrowSize, z],
-      ]} color={color} lineWidth={1.5} />
-      {/* 上箭头 */}
-      <Line points={[
-        [xOff - arrowSize * 0.5, top - arrowSize, z],
-        [xOff, top, z],
-        [xOff + arrowSize * 0.5, top - arrowSize, z],
-      ]} color={color} lineWidth={1.5} />
-      {/* 文字标注 */}
-      <Html position={[xOff, mid, z]} center distanceFactor={8}>
-        <div style={{ color, fontSize: 9, fontWeight: 600, whiteSpace: 'nowrap', textShadow: '0 0 4px rgba(255,255,255,0.9)', pointerEvents: 'none' }}>
-          {label}
-        </div>
-      </Html>
-    </group>
-  );
-}
-
-// ============ 通用布筋辅助函数（模块级，避免每次渲染重建） ============
-// GB50010: 同排钢筋净间距 ≥ max(d, 25mm)
-function maxBarsPerRow(zRange: number, dia: number): number {
-  const minClear = Math.max(dia * S, 25 * S);
-  return Math.max(Math.floor((zRange + minClear) / (dia * S + minClear)), 1);
-}
-// 在 zRange 内均匀布置 count 根钢筋，count=1 时居中
-function distributeZ(zRange: number, count: number): number[] {
-  if (count <= 1) return [0];
-  const spacing = zRange / (count - 1);
-  return Array.from({ length: count }, (_, i) => -zRange / 2 + i * spacing);
-}
-// 布筋：优先用 parseRebar 解析出的 rows/perRow，否则自动检测
-function layoutBars(
-  rebar: { count: number; diameter: number; rows?: number; perRow?: number[] },
-  zRange: number, yPositions: number[]
-): { y: number; z: number }[] {
-  let perRow: number[];
-  if (rebar.perRow && rebar.perRow.length >= 2) {
-    perRow = rebar.perRow;
-  } else if (rebar.rows && rebar.rows >= 2) {
-    const r = rebar.rows;
-    perRow = [];
-    let rem = rebar.count;
-    for (let i = 0; i < r; i++) {
-      const n = Math.ceil(rem / (r - i));
-      perRow.push(n);
-      rem -= n;
-    }
-  } else {
-    const mpr = maxBarsPerRow(zRange, rebar.diameter);
-    const rows = rebar.count > mpr ? 2 : 1;
-    perRow = rows === 2
-      ? [Math.ceil(rebar.count / 2), Math.floor(rebar.count / 2)]
-      : [rebar.count];
-  }
-  const bars: { y: number; z: number }[] = [];
-  for (let row = 0; row < perRow.length; row++) {
-    if (row >= yPositions.length) break;
-    const zArr = distributeZ(zRange, perRow[row]);
-    zArr.forEach(z => bars.push({ y: yPositions[row], z }));
-  }
-  return bars;
-}
-// Anchor description helper — 统一锚固描述格式
-function fmtAnchor(a: { canStraight: boolean; straightLen: number; bentStraightPart: number; bentBendPart: number }, note = '') {
-  return a.canStraight
-    ? `直锚 ${a.straightLen}mm${note ? ` ${note}` : ''}`
-    : `弯锚 直段${a.bentStraightPart}mm+弯折15d=${a.bentBendPart}mm`;
-}
-
-const CONSTRUCTION_STEPS = [
-  { groups: new Set(['concrete']), label: '模板+混凝土' },
-  { groups: new Set(['concrete', 'stirrup']), label: '+箍筋' },
-  { groups: new Set(['concrete', 'stirrup', 'bottom']), label: '+下部纵筋' },
-  { groups: new Set(['concrete', 'stirrup', 'bottom', 'top']), label: '+上部纵筋' },
-  { groups: new Set(['concrete', 'stirrup', 'bottom', 'top', 'support']), label: '+支座负筋/架立筋' },
-  { groups: new Set(['concrete', 'stirrup', 'bottom', 'top', 'support', 'sideBar']), label: '+腰筋/拉筋' },
-  { groups: new Set(['concrete', 'stirrup', 'bottom', 'top', 'support', 'sideBar', 'haunch']), label: '+加腋附加筋' },
-];
 
 function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, showDimensions, visibleGroups }: {
   params: BeamParams; selected: RebarMeshInfo | null;
@@ -801,13 +323,13 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
   const rightAnchor = rightR ? calcBeamEndAnchor(rightR.grade, rightR.diameter, params.concreteGrade, params.seismicGrade, params.hc || 500, params.cover || 25) : null;
   const leftAnchor2 = leftR2 ? calcBeamEndAnchor(leftR2.grade, leftR2.diameter, params.concreteGrade, params.seismicGrade, params.hc || 500, params.cover || 25) : null;
   const rightAnchor2 = rightR2 ? calcBeamEndAnchor(rightR2.grade, rightR2.diameter, params.concreteGrade, params.seismicGrade, params.hc || 500, params.cover || 25) : null;
-  const leftAnchorDesc2 = leftAnchor2 ? fmtAnchor(leftAnchor2) : '';
-  const rightAnchorDesc2 = rightAnchor2 ? fmtAnchor(rightAnchor2) : '';
+  const leftAnchorDesc2 = leftAnchor2 ? formatAnchorDesc(leftAnchor2) : '';
+  const rightAnchorDesc2 = rightAnchor2 ? formatAnchorDesc(rightAnchor2) : '';
 
-  const topAnchorDesc = fmtAnchor(topAnchor, '(laE≤hc-c)');
-  const botAnchorDesc = fmtAnchor(botAnchor, '(laE≤hc-c)');
-  const leftAnchorDesc = leftAnchor ? fmtAnchor(leftAnchor) : '';
-  const rightAnchorDesc = rightAnchor ? fmtAnchor(rightAnchor) : '';
+  const topAnchorDesc = formatAnchorDesc(topAnchor, '(laE≤hc-c)');
+  const botAnchorDesc = formatAnchorDesc(botAnchor, '(laE≤hc-c)');
+  const leftAnchorDesc = leftAnchor ? formatAnchorDesc(leftAnchor) : '';
+  const rightAnchorDesc = rightAnchor ? formatAnchorDesc(rightAnchor) : '';
 
   const isSelected = (type: string) => selected?.type === type;
   const gv = (g: string) => !visibleGroups || visibleGroups.has(g);
@@ -1196,7 +718,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
         const prefixLabel = sideInfo.prefix === 'G' ? '构造腰筋' : '抗扭筋';
         // 22G101: 腰筋锚固 — G构造腰筋锚固15d, N抗扭筋同纵筋(laE)
         const sideAnchor = calcBeamEndAnchor(sideInfo.grade, sideDia, params.concreteGrade, params.seismicGrade, params.hc || 500, params.cover || 25);
-        const sideAnchorDesc = fmtAnchor(sideAnchor);
+        const sideAnchorDesc = formatAnchorDesc(sideAnchor);
         const bars: React.ReactNode[] = [];
         const zSides = [sideZ, -sideZ];
         yPositions.forEach((y, yi) => {
@@ -1804,23 +1326,61 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
   const [showDimensions, setShowDimensions] = useState(false);
   const [cameraTarget, setCameraTarget] = useState<[number, number, number] | null>(null);
   const [animating, setAnimating] = useState(false);
-  const [step, setStep] = useState(CONSTRUCTION_STEPS.length - 1);
+  const [step, setStep] = useState(BEAM_CONSTRUCTION_STEPS.length - 1);
   const [autoPlay, setAutoPlay] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 截图函数
+  const takeScreenshot = useCallback(() => {
+    const canvas = containerRef.current?.querySelector('canvas');
+    if (canvas) {
+      const dataUrl = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = `${params.id || 'beam'}_${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = dataUrl;
+      link.click();
+    }
+  }, [params.id]);
+
+  // 快捷键支持
+  const keyBindings = useMemo(() => createViewerBindings({
+    resetView: () => setCameraTarget([3 * camScale, 2 * camScale, 4 * camScale]),
+    toggleDimensions: () => setShowDimensions(d => !d),
+    takeScreenshot,
+    toggleAnimation: () => {
+      if (animating) {
+        setAutoPlay(a => !a);
+      } else {
+        setStep(0);
+        setAnimating(true);
+      }
+    },
+    setViewPreset: (preset) => {
+      const presets: Record<string, [number, number, number]> = {
+        front: [0, 0.3 * camScale, 5 * camScale],
+        side: [5 * camScale, 0.3 * camScale, 0],
+        top: [0, 5 * camScale, 0.1],
+        iso: [3 * camScale, 2 * camScale, 4 * camScale],
+      };
+      setCameraTarget(presets[preset] || presets.iso);
+    },
+  }), [camScale, animating, takeScreenshot]);
+
+  useKeyboard(keyBindings);
 
   // Auto-play timer
   useEffect(() => {
     if (!autoPlay || !animating) return;
     const id = setInterval(() => {
       setStep(s => {
-        if (s >= CONSTRUCTION_STEPS.length - 1) { setAutoPlay(false); return s; }
+        if (s >= BEAM_CONSTRUCTION_STEPS.length - 1) { setAutoPlay(false); return s; }
         return s + 1;
       });
     }, 2000);
     return () => clearInterval(id);
   }, [autoPlay, animating]);
 
-  const visibleGroups = animating ? CONSTRUCTION_STEPS[step].groups : undefined;
+  const visibleGroups = animating ? BEAM_CONSTRUCTION_STEPS[step].groups : undefined;
 
   // 根据选中钢筋类型计算附加数据
   const selectedAdditionalData = useMemo(() => {
@@ -1927,24 +1487,36 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
 
   return (
     <div className="space-y-2" ref={containerRef}>
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <button
           onClick={() => { onShowCutChange(!showCut); if (showCut) onCutPositionChange(null); else onCutPositionChange(0); }}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${showCut ? 'bg-accent text-white' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50'}`}>
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${showCut ? 'bg-accent text-white shadow-sm shadow-accent/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21L3 9m18 12l-4-12M12 3v18" /></svg>
           {showCut ? '关闭剖切' : '剖切视图'}
         </button>
         <button
           onClick={() => setShowDimensions(!showDimensions)}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${showDimensions ? 'bg-amber-500 text-white' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50'}`}>
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${showDimensions ? 'bg-amber-500 text-white shadow-sm shadow-amber-500/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
           {showDimensions ? '隐藏标注' : '尺寸标注'}
         </button>
         <button
           onClick={() => { setAnimating(a => { if (a) { setAutoPlay(false); } else { setStep(0); } return !a; }); }}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${animating ? 'bg-emerald-500 text-white' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50'}`}>
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${animating ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           {animating ? '退出动画' : '施工动画'}
         </button>
+        <button
+          onClick={takeScreenshot}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300"
+          title="截图 (S)">
+          <Camera className="w-3.5 h-3.5" />
+          截图
+        </button>
+        <KeyboardHelp bindings={keyBindings} />
         {selected && (
-          <button onClick={() => setSelected(null)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-muted cursor-pointer hover:bg-gray-200 transition-colors">
+          <button onClick={() => setSelected(null)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-muted cursor-pointer hover:bg-gray-200 transition-colors">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
             取消选中
           </button>
         )}
@@ -1954,15 +1526,15 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
         <div className="flex items-center gap-3 bg-white rounded-lg border border-emerald-200 px-4 py-2">
           <button onClick={() => setStep(s => Math.max(0, s - 1))} disabled={step <= 0}
             className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">◀</button>
-          <input type="range" min={0} max={CONSTRUCTION_STEPS.length - 1} step={1} value={step}
+          <input type="range" min={0} max={BEAM_CONSTRUCTION_STEPS.length - 1} step={1} value={step}
             onChange={e => setStep(parseInt(e.target.value))} className="flex-1 accent-emerald-500" />
-          <button onClick={() => setStep(s => Math.min(CONSTRUCTION_STEPS.length - 1, s + 1))} disabled={step >= CONSTRUCTION_STEPS.length - 1}
+          <button onClick={() => setStep(s => Math.min(BEAM_CONSTRUCTION_STEPS.length - 1, s + 1))} disabled={step >= BEAM_CONSTRUCTION_STEPS.length - 1}
             className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">▶</button>
-          <button onClick={() => { if (!autoPlay) setStep(s => Math.min(s, CONSTRUCTION_STEPS.length - 2)); setAutoPlay(a => !a); }}
+          <button onClick={() => { if (!autoPlay) setStep(s => Math.min(s, BEAM_CONSTRUCTION_STEPS.length - 2)); setAutoPlay(a => !a); }}
             className={`px-2 py-1 rounded text-xs font-medium cursor-pointer ${autoPlay ? 'bg-emerald-500 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}>
             {autoPlay ? '⏸' : '▶ 自动'}
           </button>
-          <span className="text-xs text-muted whitespace-nowrap">{step + 1}/{CONSTRUCTION_STEPS.length} {CONSTRUCTION_STEPS[step].label}</span>
+          <span className="text-xs text-muted whitespace-nowrap">{step + 1}/{BEAM_CONSTRUCTION_STEPS.length} {BEAM_CONSTRUCTION_STEPS[step].label}</span>
         </div>
       )}
 
@@ -2007,8 +1579,14 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
           <axesHelper args={[1]} />
           <OrbitControls target={[0, hm / 2, 0]} enableDamping dampingFactor={0.1} />
         </Canvas>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
-          左键旋转 · 右键平移 · 滚轮缩放 · 点击钢筋查看详情
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 text-white/80 text-[11px] px-4 py-1.5 rounded-full backdrop-blur-md pointer-events-none">
+          <span>左键旋转</span>
+          <span className="w-px h-3 bg-white/20" />
+          <span>右键平移</span>
+          <span className="w-px h-3 bg-white/20" />
+          <span>滚轮缩放</span>
+          <span className="w-px h-3 bg-white/20" />
+          <span>点击钢筋查看详情</span>
         </div>
       </div>
     </div>
