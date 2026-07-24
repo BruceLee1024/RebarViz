@@ -91,7 +91,8 @@ export function executeToolCall(
 ): ToolResult {
   switch (toolCall.name) {
     case 'modify_params':
-      return callbacks.onModifyParams(toolCall.arguments.params);
+      // DeepSeek returns flat {sectionWidth:600} instead of nested {params:{sectionWidth:600}}
+      return callbacks.onModifyParams(toolCall.arguments.params || toolCall.arguments);
     case 'run_compliance_check':
       return callbacks.onRunComplianceCheck();
     case 'run_calculation':

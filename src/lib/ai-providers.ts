@@ -22,8 +22,8 @@ export const AI_PROVIDERS: AIProvider[] = [
     id: 'deepseek',
     name: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
+    defaultModel: 'deepseek-v4-pro',
+    models: ['deepseek-v4-pro', 'deepseek-reasoner'],
     envKey: 'DEEPSEEK_API_KEY',
   },
   {
@@ -98,6 +98,22 @@ export const AI_PROVIDERS: AIProvider[] = [
     envKey: 'MIMO_TOKEN_KEY',
     authHeader: 'api-key',
     maxTokensParam: 'max_completion_tokens',
+  },
+  {
+    id: 'siliconflow',
+    name: '硅基流动 (免费)',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    defaultModel: 'deepseek-ai/DeepSeek-V3',
+    models: [
+      'Qwen/Qwen3-8B',
+      'Qwen/Qwen3-235B-A3B',
+      'Qwen/Qwen3-VL-8B-Instruct',
+      'deepseek-ai/DeepSeek-V3',
+      'deepseek-ai/DeepSeek-R1',
+      'Qwen/Qwen2.5-32B-Instruct',
+    ],
+    visionModel: 'Qwen/Qwen3-VL-8B-Instruct',
+    envKey: 'SILICONFLOW_API_KEY',
   },
 ];
 
