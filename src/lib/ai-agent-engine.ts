@@ -1,6 +1,6 @@
 /**
  * AI Agent 执行引擎 — 支持多步工具调用的 Agent 循环
- * 
+ *
  * 流程: 用户消息 → AI (with tools) → tool_calls → 执行 → 反馈 → 继续循环
  */
 import type { AIProvider, ChatMessage } from './ai-providers';
@@ -8,7 +8,7 @@ import { AGENT_TOOLS, executeToolCall, type AgentCallbacks, type AgentToolArgs, 
 import type { ComponentType } from './types';
 import { buildSidebarSystemPrompt } from './ai-sidebar-prompt';
 import { buildVisionSystemPrompt } from './ai-vision-prompt';
-import { parseAIResponse } from './nl-rebar-parser';
+import { extractJSON, parseAIResponse } from './nl-rebar-parser';
 import { mapSchemaToParams } from './nl-rebar-mapper';
 import { aiFetch } from './ai-fetch';
 import { compressConversation } from './ai-conversation-memory';
@@ -58,9 +58,9 @@ interface ToolCallChunk {
   };
 }
 
-/** 
+/**
  * Agent 消息格式 — 支持 multimodal content (string | content parts)
- * 也支持 tool_calls / tool results 
+ * 也支持 tool_calls / tool results
  */
 type AgentMsgPayload = {
   role: string;
@@ -98,6 +98,23 @@ const AGENT_SYSTEM_SUFFIX_LITE = `
 - grade: HPB300/HRB400/HRB500
 - 不输出 rebar-json 代码块`;
 
+/** Fallback prompt suffix when tools are unsupported — ask AI to output JSON */
+const FALLBACK_JSON_INSTRUCTION = `
+
+## ⚠️ 工具调用不可用
+当前环境不支持 function calling。你必须将识别的配筋参数直接以 rebar-json 代码块格式输出：
+
+\`\`\`rebar-json
+{"componentType":"...", "sectionWidth":300, ...}
+\`\`\`
+
+**规则：**
+- 只输出 rebar-json 代码块和简短说明（1-2句话）
+- 不要模拟工具调用，直接输出 JSON 参数
+- componentType 必须填写
+- grade 用全称: HPB300/HRB400
+- 数值用整数，单位mm`;
+
 /**
  * 非流式请求（用于 tool_calls 循环中的请求）
  */
@@ -106,6 +123,7 @@ async function requestWithTools(
   messages: AgentMsgPayload[],
   signal: AbortSignal,
   round: number = 1,
+  fallbackMode: boolean = false,
 ): Promise<{
   content: string | null;
   toolCalls: ToolCallChunk[] | null;
@@ -117,6 +135,9 @@ async function requestWithTools(
     systemContent = buildSidebarSystemPrompt(config.componentType, config.context) + AGENT_SYSTEM_SUFFIX;
     if (config.hasImages) {
       systemContent += '\n\n' + buildVisionSystemPrompt(config.componentType);
+    }
+    if (fallbackMode) {
+      systemContent += FALLBACK_JSON_INSTRUCTION;
     }
   } else {
     systemContent = buildSidebarSystemPrompt(config.componentType, config.context) + AGENT_SYSTEM_SUFFIX_LITE;
@@ -134,8 +155,8 @@ async function requestWithTools(
       apiKey: config.apiKey,
       systemPrompt: systemContent,
       messages: messages as Array<{ role: string; content?: unknown }>,
-      tools: AGENT_TOOLS,
-      tool_choice: 'auto',
+      tools: fallbackMode ? undefined : AGENT_TOOLS,
+      tool_choice: fallbackMode ? undefined : 'auto',
       stream: false,
       temperature: 0.3,
       max_tokens: 4096,
@@ -190,8 +211,12 @@ async function streamFinalResponse(
   messages: AgentMsgPayload[],
   signal: AbortSignal,
   onUpdate: (content: string) => void,
+  fallbackMode: boolean = false,
 ): Promise<string> {
-  const systemContent = buildSidebarSystemPrompt(config.componentType, config.context);
+  let systemContent = buildSidebarSystemPrompt(config.componentType, config.context);
+  if (fallbackMode) {
+    systemContent += FALLBACK_JSON_INSTRUCTION;
+  }
 
   const { response: res } = await aiFetch({
     provider: config.provider,
@@ -266,7 +291,7 @@ function detectComplexRequest(text: string): boolean {
 
 /**
  * 运行 Agent 主循环
- * 
+ *
  * 支持两种模式：
  * 1. 如果 provider 支持 function calling → 使用 tools
  * 2. 如果不支持 → fallback 到传统 rebar-json 模式
@@ -386,16 +411,44 @@ export async function runAgent(
         const isClientError = statusCode === 400 || statusCode === 422;
 
         if (isFirstRound && isClientError && isToolsError) {
-          // Fallback: strip multimodal content to text for streaming (some models don't support both)
+          // ─── 改进的 fallback 流程 ───
+          // Step 1: 用 JSON 输出指令重新请求（非工具模式）
           const fallbackMessages: AgentMsgPayload[] = messages.map(m => {
             if (Array.isArray(m.content)) {
               return { ...m, content: m.content.map(p => p.type === 'text' ? p.text || '' : '[图片]').join('') };
             }
             return m;
           });
-          const content = await streamFinalResponse(config, fallbackMessages, signal, stateCallbacks.onStreamUpdate);
-          tryApplyRebarJson(content, config.componentType, callbacks, stateCallbacks);
-          return { assistantContent: content, steps: [], usedTools: false };
+
+          // 追加 JSON 输出提示到用户消息
+          if (fallbackMessages.length > 0) {
+            const lastMsg = fallbackMessages[fallbackMessages.length - 1];
+            if (typeof lastMsg.content === 'string') {
+              lastMsg.content += '\n\n（请将识别到的参数以 rebar-json 代码块格式直接输出，不要模拟工具调用）';
+            }
+          }
+
+          // Step 2: 先尝试非工具模式（不需要 tools，Qwen3-VL 等模型也能处理）
+          let fallbackContent = '';
+          try {
+            const fbResponse = await requestWithTools(config, fallbackMessages, signal, 1, true);
+            fallbackContent = fbResponse.content || '';
+            stateCallbacks.onStreamUpdate(fallbackContent);
+          } catch {
+            // 非工具模式也失败了 → 尝试纯流式
+          }
+
+          // Step 3: 尝试提取参数
+          const applied = tryApplyRebarJson(fallbackContent, config.componentType, callbacks, stateCallbacks);
+
+          // Step 4: 如果没有提取到参数，再用流式请求一次（某些模型对非流式+vision 支持不好）
+          if (!applied || !fallbackContent) {
+            const streamedContent = await streamFinalResponse(config, fallbackMessages, signal, stateCallbacks.onStreamUpdate, true);
+            tryApplyRebarJson(streamedContent, config.componentType, callbacks, stateCallbacks);
+            return { assistantContent: streamedContent || fallbackContent, steps: [], usedTools: false };
+          }
+
+          return { assistantContent: fallbackContent, steps: [], usedTools: false };
         }
         throw err;
       }
@@ -602,25 +655,65 @@ export async function runAgent(
 
 /**
  * 尝试从 AI 回复中提取 rebar-json 并应用参数（兼容传统模式）
+ *
+ * 提取策略（按优先级）：
+ * 1. rebar-json 代码块（最可靠）
+ * 2. 任意 JSON 代码块
+ * 3. 文本中嵌入的 JSON 对象
  */
 function tryApplyRebarJson(
   content: string,
   componentType: ComponentType,
   callbacks: AgentCallbacks,
   stateCallbacks: AgentStateCallbacks,
-): void {
+): boolean {
+  let jsonStr: string | null = null;
+
+  // Strategy 1: rebar-json 代码块
   const REBAR_JSON_RE = /```rebar-json\s*\n([\s\S]*?)\n\s*```/;
   const match = content.match(REBAR_JSON_RE);
-  if (!match) return;
+  if (match) {
+    jsonStr = match[1].trim();
+  } else {
+    // Strategy 2: 尝试任意 JSON 代码块
+    const JSON_BLOCK_RE = /```(?:json)?\s*\n(\{[\s\S]*?\})\n\s*```/;
+    const jsonMatch = content.match(JSON_BLOCK_RE);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    } else {
+      // Strategy 3: 使用 extractJSON 从文本中提取 JSON
+      try {
+        const extracted = extractJSON(content);
+        jsonStr = JSON.stringify(extracted);
+      } catch {
+        return false; // 无法提取任何 JSON
+      }
+    }
+  }
 
-  const jsonStr = match[1].trim();
+  if (!jsonStr) return false;
+
+  // Strategy 0: 识别 {"tool":"modify_params","params":{...}} 格式（Qwen3-VL等不支持function calling的模型）
+  try {
+    const obj = JSON.parse(jsonStr);
+    if (obj.tool === 'modify_params' && obj.params && typeof obj.params === 'object') {
+      callbacks.onModifyParams(obj.params as Record<string, unknown>);
+      stateCallbacks.onParamsApplied(Object.keys(obj.params));
+      return true;
+    }
+  } catch { /* not JSON, continue */ }
+
   const result = parseAIResponse(jsonStr, componentType);
   if (result.success) {
     const partial = mapSchemaToParams(result.schema, componentType);
     const fields = Object.keys(partial);
-    callbacks.onModifyParams(partial as Record<string, unknown>);
-    stateCallbacks.onParamsApplied(fields);
+    if (fields.length > 0) {
+      callbacks.onModifyParams(partial as Record<string, unknown>);
+      stateCallbacks.onParamsApplied(fields);
+      return true;
+    }
   }
+  return false;
 }
 
 /** Agent 模式增强的 system prompt 后缀 */
