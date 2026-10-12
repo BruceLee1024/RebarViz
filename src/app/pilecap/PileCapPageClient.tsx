@@ -1,5 +1,9 @@
 'use client';
 
+import { FormworkCalc } from '@/components/FormworkCalc';
+
+import { WorkbenchLayout, WorkbenchTabs } from '@/components/WorkbenchLayout';
+
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -23,19 +27,19 @@ import { PileCapAnchorPanel } from '@/components/PileCapAnchorPanel';
 import { SEISMIC_GRADES } from '@/lib/anchor';
 import type { SeismicGrade } from '@/lib/anchor';
 import { CompliancePanel, ComplianceBadge } from '@/components/CompliancePanel';
-import { checkPileCapCompliance } from '@/lib/compliance';
+import { checkCompliance } from '@/lib/compliance';
 import { useHistory } from '@/lib/useHistory';
 import { HistoryPanel } from '@/components/HistoryPanel';
 import { MetricComparePanel } from '@/components/MetricComparePanel';
 import { metricFromNumber, metricFromText } from '@/lib/compare-utils';
-import { Sparkles } from 'lucide-react';
 
 const DATA_TABS = [
   { key: 'section', label: '截面图' },
   { key: 'guide', label: '识图说明' },
-  { key: 'compliance', label: '规范校验' },
+  { key: 'compliance', label: '构造检查' },
   { key: 'weight', label: '用量估算' },
   { key: 'concrete', label: '混凝土量' },
+  { key: 'formwork', label: '模板量' },
   { key: 'anchor', label: '锚固构造' },
   { key: 'compare', label: '方案对比' },
 ] as const;
@@ -71,7 +75,7 @@ export function PileCapPageClient() {
   const update = (patch: Partial<PileCapParams>) => setParams(p => ({ ...p, ...patch }));
   const calcResult = useMemo(() => calcPileCap(params), [params]);
   const concreteResult = useMemo(() => calcPileCapConcrete(params), [params]);
-  const complianceResults = useMemo(() => checkPileCapCompliance(params), [params]);
+  const complianceResults = useMemo(() => checkCompliance('pilecap', params), [params]);
   const aiContext = useMemo(() => buildPileCapContext(params), [params]);
 
   const {
@@ -132,39 +136,32 @@ export function PileCapPageClient() {
   }, [compareParams, params, calcResult.items, concreteResult.totalVolume]);
 
   return (
-    <main className="px-4 py-4">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 左栏：参数输入 */}
-        <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-primary">参数输入</h2>
-              <div className="flex items-center gap-2">
-                <ResetButton onClick={() => setParams(DEFAULT)} />
-                <ShareButton params={params} />
-              </div>
-            </div>
-
+    <WorkbenchLayout
+      title="承台配筋工作台"
+      summary={<>{params.id}<span>·</span>{params.bx} × {params.by} mm<span>·</span>高 {params.h} mm</>}
+      actions={<ShareButton params={params} className="rv-button rv-share-button" />}
+      inspector={
+        <>
+          <div className="rv-inspector-tools"><span>快速示例</span><ResetButton onClick={() => setParams(DEFAULT)} /></div>
+          <div className="rv-parameter-form">
             <div className="mb-4">
-              <label className="text-xs text-muted mb-2 block">快速示例</label>
+
               <div className="flex flex-wrap gap-1.5">
                 {presetList.map(({ key, label, dot }) => (
                   <button key={key} onClick={() => applyPreset(key)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    className="rv-preset-button">
                     <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
               </div>
             </div>
-
             <div className="space-y-3">
               <Field label="承台编号" value={params.id} onChange={v => update({ id: v })} />
               <NumField label="承台 X 向宽 bx (mm)" value={params.bx} onChange={v => update({ bx: v })} min={600} max={6000} />
               <NumField label="承台 Y 向宽 by (mm)" value={params.by} onChange={v => update({ by: v })} min={600} max={6000} />
               <NumField label="承台高度 h (mm)" value={params.h} onChange={v => update({ h: v })} min={500} max={3000} />
             </div>
-
             <Section title="桩参数">
               <NumField label="桩径 (mm)" value={params.pileDiameter} onChange={v => update({ pileDiameter: v })} min={300} max={2000} />
               <NumField label="桩数" value={params.pileCount} onChange={v => update({ pileCount: v })} min={1} max={16} />
@@ -174,159 +171,121 @@ export function PileCapPageClient() {
               <SelectField label="排布方式" value={params.pileLayout} onChange={v => update({ pileLayout: v as 'grid' | 'circular' })}
                 options={[{ value: 'grid', label: '矩形排布' }, { value: 'circular', label: '环形排布' }]} />
             </Section>
-
             <Section title="底部配筋">
               <Field label="X向底筋" value={params.bottomBarX} onChange={v => update({ bottomBarX: v })} placeholder="如: C14@150" />
               <Field label="Y向底筋" value={params.bottomBarY} onChange={v => update({ bottomBarY: v })} placeholder="如: C14@150" />
             </Section>
-
             <Section title="柱参数">
               <NumField label="柱截面 X (mm)" value={params.colBx} onChange={v => update({ colBx: v })} min={200} max={1200} />
               <NumField label="柱截面 Y (mm)" value={params.colBy} onChange={v => update({ colBy: v })} min={200} max={1200} />
               <Field label="柱插筋" value={params.colMain} onChange={v => update({ colMain: v })} placeholder="如: 8C20" />
             </Section>
-
             <Section title="材料">
               <SelectField label="混凝土等级" value={params.concreteGrade} onChange={v => update({ concreteGrade: v as ConcreteGrade })}
                 options={CONCRETE_GRADES.map(g => ({ value: g, label: g }))} />
               <SelectField label="抗震等级" value={params.seismicGrade || '三级'} onChange={v => update({ seismicGrade: v as SeismicGrade })}
                 options={SEISMIC_GRADES.map(g => ({ value: g, label: g }))} />
               <NumField label="保护层 (mm)" value={params.cover} onChange={v => update({ cover: v })} min={40} max={80} />
-            </Section>
+            </Section></div><Section title="图例说明"><Legend items={[
+              { color: '#C0392B', label: 'X向底部钢筋' },
+              { color: '#2980B9', label: 'Y向底部钢筋' },
+              { color: '#8E44AD', label: '柱插筋' },
+              { color: '#7F8C8D', label: '桩基' },
+              { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
+            ]} /></Section>
+          <Section title="历史记录与收藏"><HistoryPanel
+            history={history}
+            favorites={favorites}
+            isFavorite={isFavorite(params)}
+            onSelect={handleSelectHistory}
+            onAddFavorite={() => addToFavorites(params, params.id)}
+            onRemoveFavorite={removeFromFavorites}
+            onRemoveHistory={removeFromHistory}
+            onClearHistory={clearHistory}
+          /></Section>
+        </>}
+      viewer={<PileCapViewer params={params} />}
+      analysisTabs={<WorkbenchTabs tabs={DATA_TABS} active={dataTab} onChange={setDataTab} badges={{ compliance: <ComplianceBadge results={complianceResults} /> }} />}
+      analysis={<>{dataTab === 'section' && (
+        <>
+
+          <div className="flex justify-center">
+            <PileCapCrossSection params={params} />
           </div>
-
-          <Legend items={[
-            { color: '#C0392B', label: 'X向底部钢筋' },
-            { color: '#2980B9', label: 'Y向底部钢筋' },
-            { color: '#8E44AD', label: '柱插筋' },
-            { color: '#7F8C8D', label: '桩基' },
-            { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
-          ]} />
-
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <h3 className="text-sm font-semibold text-primary mb-3">历史记录</h3>
-            <HistoryPanel
-              history={history}
-              favorites={favorites}
-              isFavorite={isFavorite(params)}
-              onSelect={handleSelectHistory}
-              onAddFavorite={() => addToFavorites(params, params.id)}
-              onRemoveFavorite={removeFromFavorites}
-              onRemoveHistory={removeFromHistory}
-              onClearHistory={clearHistory}
-            />
-          </div>
-        </div>
-
-        {/* 中栏：3D模型 + 数据 tab */}
-        <div className={`${showAI ? 'lg:col-span-6' : 'lg:col-span-9'} space-y-4 min-w-0 transition-all`}>
-          <PileCapViewer params={params} />
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
-              <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
-                {DATA_TABS.map(t => (
-                  <button key={t.key} onClick={() => setDataTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
-                    {t.label}
-                    {t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setShowAI(a => !a)}
-                className={`ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100'}`}>
-                <Sparkles className="w-3.5 h-3.5" />
-                AI 助手
-              </button>
-            </div>
-            <div className="p-5">
-              {dataTab === 'section' && (
-                <>
-                  <h2 className="text-sm font-semibold text-primary mb-3">承台平面布置（俯视）</h2>
-                  <div className="flex justify-center">
-                    <PileCapCrossSection params={params} />
-                  </div>
-                </>
-              )}
-              {dataTab === 'guide' && <PileCapExplain params={params} />}
-              {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
-              {dataTab === 'weight' && <WeightCalc result={calcResult} />}
-              {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
-              {dataTab === 'anchor' && <PileCapAnchorPanel params={params} />}
-              {dataTab === 'compare' && (
-                <div className="space-y-4">
-                  {compareParams ? (
-                    <MetricComparePanel
-                      metrics={compareMetrics}
-                      summary={{
-                        title: '钢筋用量变化',
-                        valueA: calcPileCap(compareParams).items.reduce((sum, item) => sum + item.weightKg, 0),
-                        valueB: calcResult.items.reduce((sum, item) => sum + item.weightKg, 0),
-                        unit: 'kg',
-                        labelA: compareLabel,
-                        labelB: '当前方案',
-                      }}
-                      labelA={compareLabel}
-                      labelB="当前方案"
-                    />
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-sm text-gray-500 mb-3">从历史记录或收藏中选择一个方案进行对比</p>
-                      <div className="flex flex-wrap justify-center gap-2">
-                        {[...favorites, ...history].slice(0, 6).map(item => (
-                          <button
-                            key={item.id}
-                            onClick={() => handleSelectForCompare(item.id, favorites.some(f => f.id === item.id))}
-                            className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg cursor-pointer transition-colors"
-                          >
-                            {item.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {compareParams && (
+        </>
+      )}
+        {dataTab === 'guide' && <PileCapExplain params={params} />}
+        {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
+        {dataTab === 'weight' && <WeightCalc result={calcResult} />}
+        {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
+        <div hidden={dataTab !== 'formwork'}><FormworkCalc componentType="pilecap" params={params} /></div>
+        {dataTab === 'anchor' && <PileCapAnchorPanel params={params} />}
+        {dataTab === 'compare' && (
+          <div className="space-y-4">
+            {compareParams ? (
+              <MetricComparePanel
+                metrics={compareMetrics}
+                summary={{
+                  title: '钢筋用量变化',
+                  valueA: calcPileCap(compareParams).items.reduce((sum, item) => sum + item.weightKg, 0),
+                  valueB: calcResult.items.reduce((sum, item) => sum + item.weightKg, 0),
+                  unit: 'kg',
+                  labelA: compareLabel,
+                  labelB: '当前方案',
+                }}
+                labelA={compareLabel}
+                labelB="当前方案"
+              />
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-sm text-gray-500 mb-3">从历史记录或收藏中选择一个方案进行对比</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {[...favorites, ...history].slice(0, 6).map(item => (
                     <button
-                      onClick={() => setCompareParams(null)}
-                      className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+                      key={item.id}
+                      onClick={() => handleSelectForCompare(item.id, favorites.some(f => f.id === item.id))}
+                      className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg cursor-pointer transition-colors"
                     >
-                      清除对比方案
+                      {item.name}
                     </button>
-                  )}
+                  ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+            {compareParams && (
+              <button
+                onClick={() => setCompareParams(null)}
+                className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                清除对比方案
+              </button>
+            )}
           </div>
-        </div>
-
-        {/* 右栏：AI 侧边栏 */}
-        {showAI && (
-          <div className="lg:col-span-3">
-            <AISidebar
-              componentType="pilecap"
-              currentParams={params}
-              onApplyParams={(p) => update(p as Partial<PileCapParams>)}
-              context={aiContext}
-              notationSlot={<PileCapExplain params={params} />}
-              initialMessage={aiMessage}
-              onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
-              onNavigateComponent={(type: ComponentType, message?: string) => {
-                const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
-                router.push(`/${type}${encoded}`);
-              }}
-              onApplyPreset={(preset) => {
-                if (preset in PILECAP_PRESETS) applyPreset(preset as keyof typeof PILECAP_PRESETS);
-              }}
-              onGetCurrentState={() => aiContext}
-              onRunComplianceCheck={() => ({
-                results: complianceResults,
-                summary: `校验完成: ${complianceResults.filter(r => r.status === 'pass').length}项通过, ${complianceResults.filter(r => r.status === 'fail').length}项不通过, ${complianceResults.filter(r => r.status === 'warn').length}项警告`,
-              })}
-              onSaveFavorite={(name, note) => addToFavorites(params, name, note)}
-              onResetParams={() => setParams({ ...PILECAP_PRESETS.fourPile })}
-            />
-          </div>
-        )}
-      </div>
-    </main>
+        )}</>}
+      assistant={showAI ? <AISidebar
+        componentType="pilecap"
+        currentParams={params}
+        onApplyParams={(p) => update(p as Partial<PileCapParams>)}
+        context={aiContext}
+        notationSlot={<PileCapExplain params={params} />}
+        initialMessage={aiMessage}
+        onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
+        onNavigateComponent={(type: ComponentType, message?: string) => {
+          const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
+          router.push(`/${type}${encoded}`);
+        }}
+        onApplyPreset={(preset) => {
+          if (preset in PILECAP_PRESETS) applyPreset(preset as keyof typeof PILECAP_PRESETS);
+        }}
+        onGetCurrentState={() => aiContext}
+        onRunComplianceCheck={() => ({
+          results: complianceResults,
+          summary: `校验完成: ${complianceResults.filter(r => r.status === 'pass').length}项通过, ${complianceResults.filter(r => r.status === 'fail').length}项不通过, ${complianceResults.filter(r => r.status === 'warn').length}项警告`,
+        })}
+        onSaveFavorite={(name, note) => addToFavorites(params, name, note)}
+        onResetParams={() => setParams({ ...PILECAP_PRESETS.fourPile })}
+      /> : undefined}
+      onAssistantToggle={() => setShowAI(value => !value)}
+    />
   );
 }

@@ -309,8 +309,8 @@ export function BeamExplain({ params }: { params: BeamParams }) {
             </p>
             <div className="mt-1.5 space-y-1 text-xs text-orange-700">
               <p>加腋长度 c₁ = {params.haunchLength}mm</p>
-              <p>{params.haunchType === 'horizontal' ? '加腋高度' : '加腋宽度'} c₂ = {params.haunchHeight}mm</p>
-              {params.haunchType === 'horizontal' && (() => {
+              <p>{params.haunchType === 'horizontal' ? '单侧加腋宽度' : '加腋高度'} c₂ = {params.haunchHeight}mm</p>
+              {params.haunchType === 'vertical' && (() => {
                 const botR = parseRebar(params.bottom);
                 const laE = calcLaE(botR.grade, botR.diameter, params.concreteGrade, params.seismicGrade);
                 const h0 = params.h - (params.cover || 25) - botR.diameter / 2;
@@ -331,7 +331,7 @@ export function BeamExplain({ params }: { params: BeamParams }) {
                   </>
                 );
               })()}
-              {params.haunchType === 'vertical' && (
+              {params.haunchType === 'horizontal' && (
                 <>
                   <p className="font-medium mt-1">竖向加腋构造:</p>
                   <p className="ml-2">加腋区箍筋加密区同水平加腋</p>

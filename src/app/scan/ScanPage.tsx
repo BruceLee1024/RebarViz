@@ -213,9 +213,9 @@ export function ScanPage() {
     : '';
 
   return (
-    <div className="min-h-screen bg-[#080d1a]">
+    <div className="rv-scan-page">
       {/* Header */}
-      <div className="border-b border-white/[0.08] bg-black/20 backdrop-blur-sm sticky top-0 z-10">
+      <div className="rv-scan-heading">
         <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-4">
           <Link
             href="/"
@@ -235,7 +235,7 @@ export function ScanPage() {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
+      <div className="rv-utility-page space-y-5">
 
         {/* ── Upload zone ── */}
         {images.length === 0 ? (

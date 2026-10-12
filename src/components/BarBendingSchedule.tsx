@@ -3,6 +3,8 @@
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import type { BeamParams } from '@/lib/types';
 import { calcBarShapes, type BarShape } from '@/lib/calc';
+import { canvasPaletteColor, isDarkCanvas } from '@/lib/cs-draw';
+import { createStirrupCurves, createTieBarCurves } from '@/lib/rebar-shapes';
 
 /* ─── constants ─── */
 
@@ -31,7 +33,7 @@ function dimH(ctx: CanvasRenderingContext2D, x1: number, x2: number, y: number, 
   const dir = below ? 1 : -1;
   const tk = 5;
   ctx.save();
-  ctx.strokeStyle = DIM_COLOR; ctx.fillStyle = DIM_COLOR;
+  ctx.strokeStyle = canvasPaletteColor(ctx, DIM_COLOR); ctx.fillStyle = canvasPaletteColor(ctx, DIM_COLOR);
   ctx.lineWidth = DIM_LW; ctx.font = DIM_FONT;
   ctx.beginPath();
   ctx.moveTo(x1, y); ctx.lineTo(x2, y);
@@ -54,7 +56,7 @@ function dimV(ctx: CanvasRenderingContext2D, x: number, y1: number, y2: number, 
   const dir = right ? 1 : -1;
   const tk = 5;
   ctx.save();
-  ctx.strokeStyle = DIM_COLOR; ctx.fillStyle = DIM_COLOR;
+  ctx.strokeStyle = canvasPaletteColor(ctx, DIM_COLOR); ctx.fillStyle = canvasPaletteColor(ctx, DIM_COLOR);
   ctx.lineWidth = DIM_LW; ctx.font = DIM_FONT;
   ctx.beginPath();
   ctx.moveTo(x, y1); ctx.lineTo(x, y2);
@@ -77,7 +79,7 @@ function dimV(ctx: CanvasRenderingContext2D, x: number, y1: number, y2: number, 
 function colFace(ctx: CanvasRenderingContext2D, x: number, y1: number, y2: number, side: 'left' | 'right' = 'left') {
   const sw = 5;
   ctx.save();
-  ctx.fillStyle = COL_FACE_FILL;
+  ctx.fillStyle = isDarkCanvas(ctx) ? '#224257' : COL_FACE_FILL;
   ctx.fillRect(side === 'left' ? x - sw : x, y1, sw, y2 - y1);
   ctx.setLineDash([3, 3]);
   ctx.strokeStyle = COL_FACE_DASH;
@@ -132,25 +134,25 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: BarShape, ox: number, o
   // ── Card ──
   ctx.save();
   rrect(ctx, ox + 3, oy + 3, cw - 6, CARD_H - 6, 8);
-  ctx.fillStyle = selected ? '#ECFDF5' : CARD_BG; ctx.fill();
-  ctx.strokeStyle = selected ? '#10B981' : CARD_BORDER; ctx.lineWidth = selected ? 2 : 1; ctx.stroke();
+  ctx.fillStyle = isDarkCanvas(ctx) ? (selected ? '#103e49' : '#0c2335') : (selected ? '#ECFDF5' : CARD_BG); ctx.fill();
+  ctx.strokeStyle = isDarkCanvas(ctx) ? (selected ? '#22d3ee' : '#25465c') : (selected ? '#10B981' : CARD_BORDER); ctx.lineWidth = selected ? 2 : 1; ctx.stroke();
   ctx.restore();
 
   // ── Header ──
   ctx.save();
   ctx.beginPath(); ctx.arc(ox + PAD + 4, oy + 16, 4, 0, Math.PI * 2);
-  ctx.fillStyle = shape.color; ctx.fill();
+  ctx.fillStyle = canvasPaletteColor(ctx, shape.color); ctx.fill();
   ctx.font = LABEL_FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#1E293B';
+  ctx.fillStyle = canvasPaletteColor(ctx, '#1E293B');
   ctx.fillText(shape.name, ox + PAD + 14, oy + 16);
-  ctx.fillStyle = '#64748B'; ctx.font = SPEC_FONT;
+  ctx.fillStyle = canvasPaletteColor(ctx, '#64748B'); ctx.font = SPEC_FONT;
   const cnt = shape.count > 0 ? ` ×${shape.count}` : '';
   ctx.fillText(`${shape.spec}${cnt}   L=${Math.round(shape.totalLen)}mm`, ox + PAD + 4, oy + 34);
   ctx.restore();
 
   // ── Bar style ──
   ctx.save();
-  ctx.strokeStyle = shape.color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, shape.color);
   ctx.lineWidth = BAR_LW;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -285,49 +287,34 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: BarShape, ox: number, o
       const h = shape.height || 200;
       const hook = shape.hookLen || 75;
       const maxD = Math.max(w, h);
-      const sc = Math.min((area.w - 30) * 0.50 / maxD, (area.h - 24) * 0.60 / maxD);
+      const sc = Math.min((area.w - 30) * 0.50 / maxD, (area.h - 24) * 0.50 / maxD);
       const sw = w * sc, sh = h * sc;
       const cx = area.x + area.w / 2;
-      const cy = area.y + area.h / 2 - 4;
-      const hkS = Math.min(hook * sc * 0.45, sh * 0.30);
-
-      // Rectangle
-      ctx.beginPath();
-      ctx.rect(cx - sw / 2, cy - sh / 2, sw, sh);
-      ctx.stroke();
-
-      // Hook overlap point: top-left corner
-      const hx = cx - sw / 2;
-      const hy = cy - sh / 2;
-      const sq = Math.SQRT1_2;
-
-      // Hook end #1: comes along top edge → corner → 135° tail into interior
-      ctx.beginPath();
-      ctx.moveTo(hx + hkS, hy);      // start point on top edge (overlap region)
-      ctx.lineTo(hx, hy);             // to corner
-      ctx.lineTo(hx + sq * hkS, hy + sq * hkS); // 135° tail
-      ctx.stroke();
-
-      // Hook end #2: comes along left edge → corner → 135° tail into interior
-      ctx.beginPath();
-      ctx.moveTo(hx, hy + hkS);      // start point on left edge (overlap region)
-      ctx.lineTo(hx, hy);             // to corner
-      ctx.lineTo(hx + sq * hkS, hy + sq * hkS); // 135° tail
-      ctx.stroke();
-
-      // Dot at junction
-      ctx.beginPath(); ctx.arc(hx, hy, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = shape.color; ctx.fill();
+      const cy = area.y + area.h / 2 - 22;
+      const curves = createStirrupCurves({ width: w * .001, height: h * .001,
+        diameter: Number(shape.spec.match(/(?:A|B|C|D|E)(\d+)/)?.[1] ?? 8),
+        cornerRadius: (shape.bendRadius || 20) * .001, plane: 'yz' });
+      [curves.outerCurve, ...curves.hookCurves].forEach((curve, i) => {
+        ctx.setLineDash(i === 2 ? [3, 2] : []);
+        ctx.beginPath();
+        curve.getPoints(160).forEach((p, index) => {
+          const x = cx + p.z * 1000 * sc, y = cy - p.y * 1000 * sc;
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
 
       // Dims
       dimH(ctx, cx - sw / 2, cx + sw / 2, cy + sh / 2 + 16, `中心线b=${Math.round(w)}`, true);
       dimV(ctx, cx + sw / 2 + 12, cy - sh / 2, cy + sh / 2, `h=${Math.round(h)}`);
       ctx.save();
-      ctx.fillStyle = DIM_COLOR;
+      ctx.fillStyle = canvasPaletteColor(ctx, DIM_COLOR);
       ctx.font = DIM_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(`135°弯钩 ${Math.round(hook)}mm · R=${Math.round(shape.bendRadius || 0)}mm`, cx, area.y + area.h - 20);
+      ctx.fillText(`135° · 每端平直段 ${Math.round(hook)}mm`, cx, area.y + area.h - 28);
+      ctx.fillText(`圆弧 ${(curves.hookCurves[0].path.curves[0].getLength() * 1000).toFixed(1)}mm · 中心线R=${Math.round(shape.bendRadius || 0)}mm`, cx, area.y + area.h - 14);
       ctx.restore();
       break;
     }
@@ -338,39 +325,36 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: BarShape, ox: number, o
       const hook = shape.hookLen || 75;
       if (body <= 0) break;
 
-      // 拉筋形状: 水平主体 + 两端 135°短弯钩。
-      // BBS 里表达下料形状，不画成门字形箍筋，避免和箍筋语义混淆。
-      const bodyPx = area.w * 0.68;
+      const diameter = Number(shape.spec.match(/(?:A|B|C|D|E)(\d+)/)?.[1] ?? 6);
+      const r = shape.bendRadius || 3 * diameter;
+      // Recover the bend-centre spacing from the schedule's developed body length.
+      // Its longitudinal-bar diameter does not alter the resulting 2D bar path.
+      const sideDiameter = Math.max(2 * (r - diameter), 1);
+      const eccentricity = Math.max(r - sideDiameter / 2 - diameter / 2, 0);
+      const { fullCurve } = createTieBarCurves({ sideOffset: (body / 2 + eccentricity) * .001,
+        tieDiameter: diameter, sideBarDiameter: sideDiameter });
+      const points = fullCurve.getPoints(200);
+      const minU = Math.min(...points.map(p => p.z)), maxU = Math.max(...points.map(p => p.z));
+      const minV = Math.min(...points.map(p => p.y)), maxV = Math.max(...points.map(p => p.y));
+      const sc = Math.min((area.w - 36) / ((maxU - minU) * 1000),
+        (area.h - 86) / ((maxV - minV) * 1000));
       const cx = area.x + area.w / 2;
-      const cy = area.y + area.h * 0.44;
-      const xL = cx - bodyPx / 2;
-      const xR = cx + bodyPx / 2;
-      const hookPx = Math.min(Math.max(hook * 0.18, 18), area.h * 0.28, bodyPx * 0.16);
-      const hookIn = hookPx * Math.SQRT1_2;
-      const hookDrop = hookPx * Math.SQRT1_2;
-
-      // Draw complete bar path: left 135° tail → horizontal body → right 135° tail.
+      const cy = area.y + 18 + maxV * 1000 * sc;
       ctx.beginPath();
-      ctx.moveTo(xL + hookIn, cy + hookDrop);
-      ctx.quadraticCurveTo(xL + hookIn * 0.18, cy + hookDrop * 0.18, xL, cy);
-      ctx.lineTo(xR, cy);
-      ctx.quadraticCurveTo(xR - hookIn * 0.18, cy + hookDrop * 0.18, xR - hookIn, cy + hookDrop);
+      points.forEach((p, index) => {
+        const x = cx + p.z * 1000 * sc, y = cy - p.y * 1000 * sc;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
       ctx.stroke();
-
-      // Bend points
-      ctx.fillStyle = shape.color;
-      ctx.beginPath(); ctx.arc(xL, cy, 2.3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(xR, cy, 2.3, 0, Math.PI * 2); ctx.fill();
-
-      // Dims
-      dimH(ctx, xL, xR, cy - 18, `主体=${Math.round(body)}`);
-      dimH(ctx, xL + hookIn, xR - hookIn, cy + hookDrop + 20, `L=${Math.round(shape.totalLen)}`, true);
+      dimH(ctx, cx - body * sc / 2, cx + body * sc / 2, cy - minV * 1000 * sc + 14,
+        `主体=${Math.round(body)} · L=${Math.round(shape.totalLen)}`, true);
       ctx.save();
-      ctx.fillStyle = DIM_COLOR;
+      ctx.fillStyle = canvasPaletteColor(ctx, DIM_COLOR);
       ctx.font = DIM_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(`两端135°弯钩 ${Math.round(hook)}mm · R=${Math.round(shape.bendRadius || 0)}mm`, cx, area.y + area.h - 24);
+      ctx.fillText(`两端135° · 每端平直段 ${Math.round(hook)}mm`, cx, area.y + area.h - 28);
+      ctx.fillText(`每端圆弧 ${(r * 3 * Math.PI / 4).toFixed(1)}mm · 中心线R=${Math.round(r)}mm`, cx, area.y + area.h - 14);
       ctx.restore();
       break;
     }

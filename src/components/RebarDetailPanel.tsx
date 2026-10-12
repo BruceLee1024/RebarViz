@@ -7,6 +7,7 @@ interface RebarDetailPanelProps {
   info: RebarMeshInfo;
   onClose: () => void;
   additionalData?: {
+    piecesPerStation?: number;
     length?: number;      // 钢筋总长 mm
     weight?: number;      // 单根重量 kg
     anchorLength?: number; // 锚固长度 mm
@@ -37,21 +38,22 @@ export function RebarDetailPanel({ info, onClose, additionalData }: RebarDetailP
     erection: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-800', icon: 'text-amber-500' },
     haunch: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-800', icon: 'text-orange-500' },
   };
-  
-  const theme = colorMap[info.type] || { 
-    bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-800', icon: 'text-gray-500' 
+
+  const theme = colorMap[info.type] || {
+    bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-800', icon: 'text-gray-500'
   };
 
   return (
-    <div className={`absolute top-3 right-3 w-80 rounded-xl border-2 shadow-2xl backdrop-blur-md z-20 ${theme.bg} ${theme.border}`}>
+    <div className={`rv-rebar-detail absolute top-3 right-3 w-80 rounded-xl border shadow-2xl z-20 ${theme.bg} ${theme.border}`}>
       {/* Header */}
       <div className={`flex items-center justify-between px-4 py-3 border-b ${theme.border}`}>
         <div className="flex items-center gap-2">
           <Info className={`w-4 h-4 ${theme.icon}`} />
           <h3 className={`font-semibold text-sm ${theme.text}`}>{info.label}</h3>
         </div>
-        <button 
+        <button
           onClick={onClose}
+          aria-label="关闭钢筋详情"
           className={`p-1 rounded-lg hover:bg-white/50 transition-colors ${theme.text}`}
         >
           <X className="w-4 h-4" />
@@ -79,7 +81,7 @@ export function RebarDetailPanel({ info, onClose, additionalData }: RebarDetailP
               <DetailRow
                 icon={<BarChart3 className="w-3.5 h-3.5" />}
                 label="组内数量"
-                value={`${additionalData.groupCount ?? info.groupCount} 根/道`}
+                value={`${additionalData.groupCount ?? info.groupCount} ${additionalData.piecesPerStation ? `道 · ${additionalData.piecesPerStation}箍/道` : '根/道'}`}
               />
             )}
             {(additionalData.distributionRange || info.distributionRange) && (
@@ -97,42 +99,42 @@ export function RebarDetailPanel({ info, onClose, additionalData }: RebarDetailP
               />
             )}
             {additionalData.length != null && (
-              <DetailRow 
+              <DetailRow
                 icon={<Ruler className="w-3.5 h-3.5" />}
-                label="钢筋长度"
+                label={additionalData.piecesPerStation ? "每道总长" : "钢筋长度"}
                 value={`${(additionalData.length / 1000).toFixed(2)} m`}
               />
             )}
             {additionalData.weight != null && (
-              <DetailRow 
+              <DetailRow
                 icon={<Weight className="w-3.5 h-3.5" />}
-                label="单根重量"
+                label={additionalData.piecesPerStation ? "每道重量" : "单根重量"}
                 value={`${additionalData.weight.toFixed(2)} kg`}
               />
             )}
             {additionalData.anchorLength != null && (
-              <DetailRow 
+              <DetailRow
                 icon={<Anchor className="w-3.5 h-3.5" />}
                 label="锚固长度"
                 value={`${additionalData.anchorLength} mm`}
               />
             )}
             {additionalData.lapLength != null && (
-              <DetailRow 
+              <DetailRow
                 icon={<BarChart3 className="w-3.5 h-3.5" />}
                 label="搭接长度"
                 value={`${additionalData.lapLength} mm`}
               />
             )}
             {additionalData.spacing != null && (
-              <DetailRow 
+              <DetailRow
                 icon={<Ruler className="w-3.5 h-3.5" />}
                 label="钢筋间距"
                 value={`${additionalData.spacing} mm`}
               />
             )}
             {additionalData.hint && (
-              <DetailRow 
+              <DetailRow
                 icon={<Info className="w-3.5 h-3.5" />}
                 label="多跨"
                 value={additionalData.hint}

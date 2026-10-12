@@ -34,7 +34,7 @@ const CHECKLIST = [
 
 export default function ApiHelpPage() {
   return (
-    <main className="max-w-3xl mx-auto px-4 py-8 md:py-10">
+    <main className="rv-utility-page">
       <article className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
         <div className="px-6 py-6 md:px-8 md:py-8 border-b border-gray-100 bg-gradient-to-br from-blue-50 via-cyan-50 to-white">
           <p className="text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">RebarViz Help</p>

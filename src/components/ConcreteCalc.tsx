@@ -1,139 +1,75 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
-import { Box, ChevronDown, Copy, Check } from 'lucide-react';
+import { useState } from 'react';
+import { Box, ChevronDown, Copy, Check, Info } from 'lucide-react';
 import type { ConcreteCalcResult } from '@/lib/calc-concrete';
 import type { FormulaStep } from '@/lib/calc';
 
 function FormulaBlock({ steps }: { steps: FormulaStep[] }) {
-  return (
-    <div className="mt-2 mb-1 ml-4 pl-3 border-l-2 border-amber-200 space-y-1.5">
-      {steps.map((s, i) => (
-        <div key={i} className="text-[11px] leading-relaxed">
-          <span className="text-amber-600 font-medium">{s.label}</span>
-          <div className="text-gray-500 font-mono ml-2">
-            <span className="text-gray-400">{s.formula}</span>
-            <br />
-            <span className="text-gray-600">{s.substitution}</span>
-            <br />
-            <span className="text-gray-800 font-semibold">{s.result}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  return <dl className="rv-concrete-formulas">
+    {steps.map((step, i) => <div key={i}>
+      <dt>{step.label}<span>{step.formula}</span></dt>
+      <dd><span>{step.substitution}</span><strong>{step.result.trim().startsWith('=') ? step.result : `= ${step.result}`}</strong></dd>
+    </div>)}
+  </dl>;
 }
 
 export function ConcreteCalc({ result }: { result: ConcreteCalcResult }) {
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [copied, setCopied] = useState(false);
-  const maxVol = useMemo(() => Math.max(...result.items.map(it => it.volume), 0.0001), [result.items]);
-  const toggleExpand = useCallback((i: number) => setExpandedIdx(prev => prev === i ? null : i), []);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
 
-  const handleCopy = useCallback(async () => {
+  async function handleCopy() {
     const lines = [
-      '混凝土工程量计算',
+      '混凝土工程量计算（模型估算）',
+      '按当前模型尺寸估算，不扣钢筋体积',
       '─'.repeat(30),
-      ...result.items.map(it => `${it.name}: ${it.volume.toFixed(4)} m³ (${it.description})`),
+      ...result.items.flatMap(item => [
+        `${item.name}: ${item.volume.toFixed(4)} m³ (${item.description})`,
+        ...item.formulaSteps.map(step => `  ${step.formula}: ${step.substitution} = ${step.result}`),
+      ]),
       '─'.repeat(30),
       `合计: ${result.totalVolume.toFixed(4)} m³`,
+      ...(result.notes ?? []),
     ];
     try {
       await navigator.clipboard.writeText(lines.join('\n'));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* ignore */ }
-  }, [result]);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('error');
+    }
+  }
 
-  return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
-            <Box className="w-4 h-4 text-amber-600" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-gray-800">混凝土工程量</h2>
-            <p className="text-[11px] text-gray-400">按清单规范，不扣除钢筋体积</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button onClick={handleCopy}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors">
-            {copied ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
-            {copied ? '已复制' : '复制'}
-          </button>
-        </div>
+  return <section className="rv-concrete" aria-label="混凝土工程量">
+    <header className="rv-concrete-header">
+      <div className="rv-concrete-title"><Box size={16} aria-hidden="true" /><h2>混凝土工程量</h2><span>模型估算</span></div>
+      <button className="rv-concrete-copy" onClick={handleCopy} onBlur={() => setCopyStatus('idle')}>
+        {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
+        <span aria-live="polite">{copyStatus === 'copied' ? '已复制' : copyStatus === 'error' ? '复制失败，重试' : '复制明细'}</span>
+      </button>
+    </header>
+
+    <div className="rv-concrete-layout">
+      <div className="rv-concrete-total">
+        <span className="rv-concrete-label">混凝土总量</span>
+        <div className="rv-concrete-number"><strong>{result.totalVolume.toFixed(4)}</strong><span>m³</span></div>
+        <p>{result.items.length} 个分项<span>未扣钢筋体积</span></p>
       </div>
-
-      {/* Total hero card */}
-      <div className="mb-4 p-4 rounded-xl bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-100/50">
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-xs text-amber-600/70 font-medium mb-0.5">混凝土总量</p>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-bold text-amber-700">{result.totalVolume.toFixed(4)}</span>
-              <span className="text-sm text-amber-500 font-medium">m³</span>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="flex items-center gap-3">
-              <div>
-                <p className="text-[10px] text-amber-500/70">分项数</p>
-                <p className="text-sm font-semibold text-amber-700">{result.items.length}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Detail list */}
-      <div className="space-y-1">
-        {result.items.map((item, i) => {
-          const pct = result.totalVolume > 0 ? (item.volume / result.totalVolume) * 100 : 0;
-          const isExpanded = expandedIdx === i;
-          const hasFormula = item.formulaSteps.length > 0;
-          return (
-            <div key={i}
-              className={`group rounded-lg px-3 py-2.5 transition-colors ${
-                isExpanded ? 'bg-amber-50/60' : 'hover:bg-gray-50/80'
-              } ${hasFormula ? 'cursor-pointer' : ''}`}
-              onClick={hasFormula ? () => toggleExpand(i) : undefined}
-            >
-              {/* Top: name + volume */}
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-2 h-2 rounded-full shrink-0" style={{ background: item.color }} />
-                  <span className="text-[13px] font-medium text-gray-800">{item.name}</span>
-                  {hasFormula && (
-                    <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
-                  )}
-                </div>
-                <div className="flex items-baseline gap-1 shrink-0">
-                  <span className="text-[13px] font-semibold text-gray-800">{item.volume.toFixed(4)}</span>
-                  <span className="text-[10px] text-gray-400">m³</span>
-                  <span className="text-[10px] text-gray-300 ml-1">({pct.toFixed(1)}%)</span>
-                </div>
-              </div>
-              {/* Bottom: description + bar */}
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{ width: `${(item.volume / maxVol) * 100}%`, background: item.color, opacity: 0.7 }}
-                  />
-                </div>
-                <span className="text-[10px] text-gray-400 shrink-0 max-w-[200px] text-right truncate">{item.description}</span>
-              </div>
-              {/* Formula breakdown */}
-              {isExpanded && hasFormula && (
-                <FormulaBlock steps={item.formulaSteps} />
-              )}
-            </div>
-          );
-        })}
+      <div className="rv-concrete-breakdown">
+        <div className="rv-concrete-columns"><span>计量分项 / 计算明细</span><span>体积 · m³</span></div>
+        {result.items.length === 0 && <p className="rv-concrete-empty">暂无计量分项，请先完善构件参数。</p>}
+        {result.items.map((item, i) => <details className="rv-concrete-item" key={`${i}-${item.name}`} open={i === 0}>
+          <summary>
+            <span className="rv-concrete-item-name"><span className="rv-concrete-index">{String(i + 1).padStart(2, '0')}</span>{item.name}</span>
+            <span className="rv-concrete-item-value"><strong>{item.volume.toFixed(4)}</strong><ChevronDown size={13} aria-hidden="true" /></span>
+          </summary>
+          {item.description && !item.formulaSteps.some(step => step.substitution === item.description) && <p className="rv-concrete-description">{item.description}</p>}
+          {item.formulaSteps.length > 0 && <FormulaBlock steps={item.formulaSteps} />}
+        </details>)}
       </div>
     </div>
-  );
+
+    <details className="rv-concrete-basis">
+      <summary><Info size={12} aria-hidden="true" /><span>计算口径</span><span className="rv-concrete-basis-hint">按当前模型尺寸估算</span><ChevronDown size={12} aria-hidden="true" /></summary>
+      <ul><li>按当前模型尺寸估算，不扣钢筋所占体积；结果保留 4 位小数。</li>{result.notes?.map(note => <li key={note}>{note}</li>)}</ul>
+    </details>
+  </section>;
 }

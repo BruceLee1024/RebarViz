@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import * as THREE from 'three';
+import { useEffect, useMemo, useState } from 'react';
+import { continuousLineGeometry } from '@/lib/rebar-curve';
 import type { RebarMeshInfo, RebarRenderMode } from '@/lib/types';
 import { S, REBAR_MATERIAL } from '@/lib/constants';
-import { createStirrupCurves, resolveInnerLegPositions } from '@/lib/rebar-shapes';
+import { CappedRebarTube } from './CappedRebarTube';
+import { createCompositeStirrupCurves } from '@/lib/rebar-shapes';
 
 const MIN_HIT_RADIUS = 0.045;
 
@@ -18,7 +19,7 @@ export interface StirrupRingProps {
   info: RebarMeshInfo;
   selected: boolean;
   onSelect: (info: RebarMeshInfo | null) => void;
-  cover: number;
+  cover: number; // 混凝土边缘到钢筋外表面的距离，非中心线距离
   legs?: number;
   cornerRadius?: number;
   barZPositions?: number[];
@@ -47,36 +48,29 @@ export function StirrupRing({
 }: StirrupRingProps) {
   const [hovered, setHovered] = useState(false);
 
-  const { outerCurve, hookCurves } = useMemo(() => {
-    return createStirrupCurves({
+  const { hoops } = useMemo(() => {
+    return createCompositeStirrupCurves({
       width,
       height,
       diameter,
       cornerRadius,
+      legs,
+      barPositions: barZPositions,
       plane: 'yz',
     });
-  }, [width, height, diameter, cornerRadius]);
-
-  // 多肢箍中间拉筋位置
-  const legPositions = useMemo(() => {
-    return resolveInnerLegPositions({ legs, width, barPositions: barZPositions });
-  }, [legs, width, barZPositions]);
+  }, [width, height, diameter, cornerRadius, legs, barZPositions]);
 
   const activeColor = selected ? hiColor : hovered ? hiColor : color;
   const r = (diameter * S) / 2;
   const hitR = Math.max(r * 5, MIN_HIT_RADIUS);
   const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (selected || hovered));
   const showCenterline = renderMode === 'centerline' || !showSolid;
-  const outerLineGeometry = useMemo(() => new THREE.BufferGeometry().setFromPoints(outerCurve.getPoints(160)), [outerCurve]);
-  const hookLineGeometries = useMemo(() => hookCurves.map((curve) => new THREE.BufferGeometry().setFromPoints(curve.getPoints(32))), [hookCurves]);
-  const legLineGeometries = useMemo(() => legPositions.map(() => new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, -height / 2, 0),
-    new THREE.Vector3(0, height / 2, 0),
-  ])), [legPositions, height]);
+  const lineGeometries = useMemo(() => hoops.map(hoop => continuousLineGeometry(hoop.fullCurve.getPoints(320))), [hoops]);
+  useEffect(() => () => lineGeometries.forEach(geometry => geometry.dispose()), [lineGeometries]);
 
   return (
     <group
-      position={[x, height / 2 + cover, 0]}
+      position={[x, height / 2 + cover + r, 0]}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(selected ? null : info);
@@ -91,82 +85,20 @@ export function StirrupRing({
         document.body.style.cursor = 'auto';
       }}
     >
-      {/* 外围箍筋 */}
-      {showSolid && (
+      {hoops.map(({ fullCurve }, i) => <group key={i}>
+        {showSolid && <CappedRebarTube curve={fullCurve} radius={r}>
+          <meshStandardMaterial color={activeColor} roughness={REBAR_MATERIAL.roughness}
+            metalness={REBAR_MATERIAL.metalness} emissive={selected ? hiColor : '#000000'}
+            emissiveIntensity={selected ? .3 : 0} />
+        </CappedRebarTube>}
+        {showCenterline && <lineSegments geometry={lineGeometries[i]}>
+          <lineBasicMaterial color={activeColor} transparent opacity={selected ? .95 : .62} />
+        </lineSegments>}
         <mesh>
-          <tubeGeometry args={[outerCurve, 200, r, 8, true]} />
-          <meshStandardMaterial
-            color={activeColor}
-            roughness={REBAR_MATERIAL.roughness}
-            metalness={REBAR_MATERIAL.metalness}
-            emissive={selected ? hiColor : '#000000'}
-            emissiveIntensity={selected ? 0.3 : 0}
-          />
+          <tubeGeometry args={[fullCurve, 160, hitR, 6, false]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         </mesh>
-      )}
-      {showCenterline && (
-        <lineSegments geometry={outerLineGeometry}>
-          <lineBasicMaterial color={activeColor} transparent opacity={selected ? 0.95 : 0.62} />
-        </lineSegments>
-      )}
-      <mesh>
-        <tubeGeometry args={[outerCurve, 120, hitR, 6, true]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-
-      {/* 箍筋弯钩 (135° hooks) */}
-      {hookCurves.map((hc, hi) => (
-        <group key={`hook${hi}`}>
-          {showSolid && (
-            <mesh>
-              <tubeGeometry args={[hc, 40, r, 6, false]} />
-              <meshStandardMaterial
-                color={activeColor}
-                roughness={REBAR_MATERIAL.roughness}
-                metalness={REBAR_MATERIAL.metalness}
-                emissive={selected ? hiColor : '#000000'}
-                emissiveIntensity={selected ? 0.3 : 0}
-              />
-            </mesh>
-          )}
-          {showCenterline && (
-            <lineSegments geometry={hookLineGeometries[hi]}>
-              <lineBasicMaterial color={activeColor} transparent opacity={selected ? 0.95 : 0.62} />
-            </lineSegments>
-          )}
-          <mesh>
-            <tubeGeometry args={[hc, 28, hitR, 6, false]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* 中间拉筋（多肢箍） */}
-      {legPositions.map((z, i) => (
-        <group key={`leg${i}`} position={[0, 0, z]}>
-          {showSolid && (
-            <mesh>
-              <cylinderGeometry args={[r, r, height, 8]} />
-              <meshStandardMaterial
-                color={activeColor}
-                roughness={REBAR_MATERIAL.roughness}
-                metalness={REBAR_MATERIAL.metalness}
-                emissive={selected ? hiColor : '#000000'}
-                emissiveIntensity={selected ? 0.3 : 0}
-              />
-            </mesh>
-          )}
-          {showCenterline && (
-            <lineSegments geometry={legLineGeometries[i]}>
-              <lineBasicMaterial color={activeColor} transparent opacity={selected ? 0.95 : 0.62} />
-            </lineSegments>
-          )}
-          <mesh>
-            <cylinderGeometry args={[hitR, hitR, height, 6]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-        </group>
-      ))}
+      </group>)}
     </group>
   );
 }

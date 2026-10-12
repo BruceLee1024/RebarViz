@@ -1,14 +1,22 @@
 'use client';
 
+import { stairReinforcement } from '@/lib/stair-reinforcement';
+
+import { FittedCamera } from './FittedCamera';
+
+import { ViewerControls } from './ViewerControls';
+
 import { useMemo, useState, useEffect, useCallback } from 'react';
-import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Line } from '@react-three/drei';
-import { Camera, Maximize2, Minimize2 } from 'lucide-react';
+import { Camera } from 'lucide-react';
 import { useFullscreen } from '@/lib/useFullscreen';
 import * as THREE from 'three';
 import type { StairParams, RebarMeshInfo } from '@/lib/types';
 import { parseSlabRebar, gradeLabel } from '@/lib/rebar';
 import { S, REBAR_MATERIAL, COLOR_STAIR_TOP, COLOR_STAIR_TOP_HI, COLOR_STAIR_BOTTOM, COLOR_STAIR_BOTTOM_HI, COLOR_STAIR_DIST, COLOR_STAIR_DIST_HI, STAIR_CONSTRUCTION_STEPS } from '@/lib/constants';
+import { roundedRebarPath } from '@/lib/rebar-curve';
+import { CappedRebarTube } from './three/CappedRebarTube';
 import { SectionCutPlane } from './three';
 import { useKeyboard, createViewerBindings } from '@/lib/useKeyboard';
 import { KeyboardHelp } from './KeyboardHelp';
@@ -17,13 +25,7 @@ import { KeyboardHelp } from './KeyboardHelp';
 // 辅助组件
 // ═══════════════════════════════════════════════════════════════════
 
-function CameraController({ targetPosition }: { targetPosition: [number, number, number] | null }) {
-  const { camera } = useThree();
-  useEffect(() => {
-    if (targetPosition) { camera.position.set(...targetPosition); camera.updateProjectionMatrix(); }
-  }, [targetPosition, camera]);
-  return null;
-}
+
 
 function StairBar({ position, rotation, length, diameter, color, hiColor, info, selected, onSelect }: {
   position: [number, number, number]; rotation?: [number, number, number];
@@ -32,7 +34,7 @@ function StairBar({ position, rotation, length, diameter, color, hiColor, info, 
 }) {
   const [hovered, setHovered] = useState(false);
   const activeColor = selected ? hiColor : hovered ? hiColor : color;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
+  const scale = 1; // Highlight by colour, preserving contact clearance.
   return (
     <mesh position={position} rotation={rotation || [0, 0, Math.PI / 2]}
       onClick={(e) => { e.stopPropagation(); onSelect(selected ? null : info); }}
@@ -46,7 +48,7 @@ function StairBar({ position, rotation, length, diameter, color, hiColor, info, 
   );
 }
 
-/** 多段折线钢筋管 — 每段独立 TubeGeometry，保持弯折处尖角 */
+/** 连续钢筋中心线，以圆弧处理弯折并封闭端面。 */
 function TubeBar({ path, diameter, color, hiColor, info, selected, onSelect }: {
   path: THREE.Vector3[]; diameter: number; color: string; hiColor: string;
   info: RebarMeshInfo; selected: boolean; onSelect: (info: RebarMeshInfo | null) => void;
@@ -54,29 +56,17 @@ function TubeBar({ path, diameter, color, hiColor, info, selected, onSelect }: {
   const [hovered, setHovered] = useState(false);
   const activeColor = selected ? hiColor : hovered ? hiColor : color;
   const r = diameter * S / 2;
-  const geos = useMemo(() => {
-    const result: THREE.TubeGeometry[] = [];
-    for (let i = 0; i < path.length - 1; i++) {
-      const seg = new THREE.LineCurve3(path[i], path[i + 1]);
-      const len = path[i].distanceTo(path[i + 1]);
-      const segs = Math.max(2, Math.round(len / 0.02)); // ≈20mm per segment
-      result.push(new THREE.TubeGeometry(seg, segs, r, 8, false));
-    }
-    return result;
-  }, [path, r]);
+  const curve = useMemo(() => roundedRebarPath(path, diameter * S * 4), [path, diameter]);
   const handler = {
     onClick: (e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(selected ? null : info); },
     onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; },
     onPointerOut: () => { setHovered(false); document.body.style.cursor = 'auto'; },
   };
   return (
-    <group>
-      {geos.map((geo, i) => (
-        <mesh key={i} geometry={geo} {...handler}>
-          <meshStandardMaterial color={activeColor} {...REBAR_MATERIAL}
-            emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
-        </mesh>
-      ))}
+    <group {...handler}>
+      <CappedRebarTube curve={curve} radius={r} segments={160}>
+        <meshStandardMaterial color={activeColor} {...REBAR_MATERIAL} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? .3 : 0} />
+      </CappedRebarTube>
     </group>
   );
 }
@@ -91,12 +81,13 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   concreteOpacity: number; visibleGroups: Set<string> | null;
   showDimensions: boolean; cutPosition: number | null;
 }) {
+  const steel = useMemo(() => stairReinforcement(params), [params]);
   const {
     stepCount: n, stepHeight: hMM, stepWidth: bMM,
     slabThickness: tMM, flightWidth: wMM,
     topPlatformLen: topPlatMM, botPlatformLen: botPlatMM,
     platformThickness: platTMM,
-    beamB: beamBMM, beamH: beamHMM,
+    beamH: beamHMM,
     cover: coverMM,
   } = params;
 
@@ -108,7 +99,6 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   const topPlat = topPlatMM * S;
   const botPlat = botPlatMM * S;
   const platT = platTMM * S;
-  const beamB = beamBMM * S;
   const beamH = beamHMM * S;
   const cover = coverMM * S;
 
@@ -124,9 +114,8 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   // 梯段倾斜角度
   const angle = Math.atan2(totalRise, totalRun);
   // 沿斜面的梯板长度
-  const slabLen = Math.sqrt(totalRise * totalRise + totalRun * totalRun);
   // 板厚在竖直方向的投影
-  const tCosA = t * Math.cos(angle);
+  const tCosA = t / Math.cos(angle); // Vertical offset gives the specified thickness normal to the slope.
 
   // 坐标系: X 方向=行走方向 (水平), Y=竖直, Z=梯段宽度方向
   // 原点: 低端梯梁顶面中心（梯板低端支座）
@@ -167,41 +156,16 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
     return geos;
   }, [n, b, h, w]);
 
-  // ============ 纵筋 Z 坐标分布 ============
-  const botBarZs = useMemo(() => {
-    const spacing = botR.spacing * S;
-    const bars: number[] = [];
-    for (let z = -w / 2 + cover + botR.diameter * S / 2; z <= w / 2 - cover - botR.diameter * S / 2; z += spacing) {
-      bars.push(z);
-    }
-    return bars;
-  }, [botR.spacing, botR.diameter, w, cover]);
 
-  const topBarZs = useMemo(() => {
-    const spacing = topR.spacing * S;
-    const bars: number[] = [];
-    for (let z = -w / 2 + cover + topR.diameter * S / 2; z <= w / 2 - cover - topR.diameter * S / 2; z += spacing) {
-      bars.push(z);
-    }
-    return bars;
-  }, [topR.spacing, topR.diameter, w, cover]);
+  // ============ 纵筋 Z 坐标分布 ============
+  const botBarZs = steel.botBarZs;
+
+  const topBarZs = steel.topBarZs;
 
   // ============ 分布筋沿斜面分布 ============
-  const distBarPositions = useMemo(() => {
-    const spacing = distR.spacing * S;
-    const positions: { x: number; y: number }[] = [];
-    // 沿斜面方向每隔 spacing 布一根
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    for (let s = spacing; s < slabLen - spacing / 2; s += spacing) {
-      positions.push({ x: s * cosA, y: s * sinA });
-    }
-    return positions;
-  }, [distR.spacing, angle, slabLen]);
+  const distBarPositions = steel.distBarPositions;
 
   // ============ 锚固参数 (22G101-2 页2-8) ============
-  const bot5d = 5 * botR.diameter * S;              // 下部纵筋 ≥5d 过支座中线
-  const topHook15d = 15 * topR.diameter * S;         // 上部纵筋弯钩 15d
 
   // ── 梯梁几何 ──
   // AT型: 梯梁渲染范围  低端 [0, b], 高端 [totalRun-b, totalRun]
@@ -219,8 +183,6 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   //   下部筋Y = slope * X - tCosA + cvBot   (cvBot = 竖直方向的保护层+半径)
   //   上部筋Y = slope * X - cvTop            (cvTop = 竖直方向的保护层+半径)
   const slope = totalRise / totalRun;
-  const cvBot = (cover + botR.diameter * S / 2) / Math.cos(angle); // 沿竖直方向的偏移
-  const cvTop = (cover + topR.diameter * S / 2) / Math.cos(angle);
 
   // ============ 纵筋路径 (严格按 22G101-2 图集 页2-8) ============
   //
@@ -237,58 +199,11 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   // ─── 下部纵筋 ───
   // 沿 botY(x) = slope*x - tCosA + cvBot 延长线直接伸入梯梁，无弯钩
   // 锚固条件: 过支座中线 / 伸入梁≥5d，两者取大值(即更深入梁的那个)
-  const botBarPath = useMemo(() => {
-    const botY = (x: number) => slope * x - tCosA + cvBot;
-
-    // 低端: 梁[0,b], 中线X=b/2, 梁内侧边X=b
-    // 过中线: X ≤ b/2;  伸入≥5d: X ≤ b - bot5d;  取较小值=更深入
-    const lowAncX = Math.max(Math.min(b / 2, b - bot5d), cover);
-
-    // 高端: 梁[totalRun-b, totalRun], 中线X=totalRun-b/2, 梁内侧边X=totalRun-b
-    // 过中线: X ≥ totalRun-b/2;  伸入≥5d: X ≥ totalRun-b+bot5d;  取较大值=更深入
-    const highAncX = Math.min(Math.max(totalRun - b / 2, totalRun - b + bot5d), totalRun - cover);
-
-    return [
-      new THREE.Vector3(lowAncX, botY(lowAncX), 0),     // 低端锚固末端(延长线上)
-      new THREE.Vector3(highAncX, botY(highAncX), 0),   // 高端锚固末端(延长线上)
-    ];
-  }, [slope, tCosA, cvBot, totalRun, b, bot5d, cover]);
+  const botBarPath = steel.botBarPath;
 
   // ─── 上部纵筋 ───
   // 两端各一段独立负筋: 沿 topY(x) = slope*x - cvTop 延长线伸入梯梁, 弯钩向下
-  const topBarPaths = useMemo((): { low: THREE.Vector3[]; high: THREE.Vector3[] } => {
-    const topY = (x: number) => slope * x - cvTop;
-    const cosA = Math.cos(angle);
-    const dxLn4 = (slabLen / 4) * cosA;  // ln/4 水平投影
-
-    // === 低端负筋 ===
-    // 梁[0,b]: 延长线伸入梁至外侧边附近
-    const lowAncX = cover;                                    // 锚固末端(梁外侧边)
-    const lowAncY = topY(lowAncX);                            // 延长线上的Y
-    const lowHookBottom = Math.max(lowAncY - topHook15d, h - beamH + cover);
-    const lowEndX = Math.min(totalRun - b, b + dxLn4);       // 斜段末端(ln/4)
-
-    const low: THREE.Vector3[] = [
-      new THREE.Vector3(lowAncX, lowHookBottom, 0),           // ① 弯钩底(15d向下)
-      new THREE.Vector3(lowAncX, lowAncY, 0),                  // ② 弯折点(延长线上)
-      new THREE.Vector3(lowEndX, topY(lowEndX), 0),            // ③ 斜段末端(ln/4)
-    ];
-
-    // === 高端负筋 ===
-    // 梁[totalRun-b, totalRun]: 延长线伸入梁至外侧边附近
-    const highAncX = totalRun - cover;
-    const highAncY = topY(highAncX);
-    const highHookBottom = Math.max(highAncY - topHook15d, totalRise - beamH + cover);
-    const highStartX = Math.max(b, totalRun - b - dxLn4);
-
-    const high: THREE.Vector3[] = [
-      new THREE.Vector3(highStartX, topY(highStartX), 0),     // ① 斜段起端(ln/4)
-      new THREE.Vector3(highAncX, highAncY, 0),                // ② 弯折点(延长线上)
-      new THREE.Vector3(highAncX, highHookBottom, 0),          // ③ 弯钩底(15d向下)
-    ];
-
-    return { low, high };
-  }, [slope, cvTop, totalRun, totalRise, slabLen, angle, b, h, beamH, topHook15d, cover]);
+  const topBarPaths = steel.topBarPaths;
 
   // ============ 梯板底面几何 (斜面板) ============
   // 板顶面与踏步底面对齐 (0,0)→(totalRun,totalRise)
@@ -611,6 +526,7 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   concreteOpacity: number; visibleGroups: Set<string> | null;
   showDimensions: boolean; cutPosition: number | null;
 }) {
+  const steel = useMemo(() => stairReinforcement(params), [params]);
   const {
     stepCount: n, stepHeight: hMM, stepWidth: bMM,
     slabThickness: tMM, flightWidth: wMM,
@@ -640,8 +556,7 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
   const totalRise = n * h;
   const totalRun = n * b;
   const angle = Math.atan2(totalRise, totalRun);
-  const slopeLen = Math.sqrt(totalRise * totalRise + totalRun * totalRun);
-  const tCosA = t * Math.cos(angle);
+  const tCosA = t / Math.cos(angle); // Vertical offset gives the specified thickness normal to the slope.
   const slope = totalRise / totalRun;
 
   // Coordinate system:
@@ -674,99 +589,18 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
     return geos;
   }, [n, b, h, w]);
 
-  const botBarZs = useMemo(() => {
-    const spacing = botR.spacing * S;
-    const bars: number[] = [];
-    for (let z = -w / 2 + cover + botR.diameter * S / 2; z <= w / 2 - cover - botR.diameter * S / 2; z += spacing) bars.push(z);
-    return bars;
-  }, [botR.spacing, botR.diameter, w, cover]);
+  const botBarZs = steel.botBarZs;
 
-  const topBarZs = useMemo(() => {
-    const spacing = topR.spacing * S;
-    const bars: number[] = [];
-    for (let z = -w / 2 + cover + topR.diameter * S / 2; z <= w / 2 - cover - topR.diameter * S / 2; z += spacing) bars.push(z);
-    return bars;
-  }, [topR.spacing, topR.diameter, w, cover]);
+  const topBarZs = steel.topBarZs;
 
-  const distBarPositions = useMemo(() => {
-    const spacing = distR.spacing * S;
-    const positions: { x: number; y: number; isFlat: boolean }[] = [];
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    for (let x = -botFlat + spacing; x < -spacing / 2; x += spacing) {
-      positions.push({ x, y: 0, isFlat: true });
-    }
-    const visibleSlopeArcLen = (totalRun - beamB) / cosA;
-    for (let s = spacing; s < visibleSlopeArcLen - spacing / 2; s += spacing) {
-      positions.push({ x: s * cosA, y: s * sinA, isFlat: false });
-    }
-    return positions;
-  }, [distR.spacing, angle, botFlat, totalRun, beamB]);
+  const distBarPositions = steel.distBarPositions;
 
-  const cvBot = (cover + botR.diameter * S / 2) / Math.cos(angle);
-  const cvBotFlat = cover + botR.diameter * S / 2;
-  const cvTop = (cover + topR.diameter * S / 2) / Math.cos(angle);
-  const cvTopFlat = cover + topR.diameter * S / 2;
-  const bot5d = 5 * botR.diameter * S;
-  const topHook15d = 15 * topR.diameter * S;
 
   // Bottom bar: horizontal in low beam → flat (horizontal) → kink at X=0 → slope → anchor in high beam (AT-style)
-  const botBarPath = useMemo(() => {
-    const botAncHorizLow = Math.max(beamB / 2, bot5d);
-    const yFlat = -t + cvBotFlat;
-    const ySlopeAt0 = -tCosA + cvBot;
-    // High anchor: pass beam centreline or >=5d from inner face, whichever is deeper (same as AT)
-    const highAncX = Math.min(
-      Math.max(totalRun - beamB / 2, totalRun - beamB + bot5d),
-      totalRun - cover,
-    );
-    const highAncY = slope * highAncX - tCosA + cvBot;
-    return [
-      new THREE.Vector3(-botFlat - botAncHorizLow, yFlat, 0),
-      new THREE.Vector3(-botFlat, yFlat, 0),
-      new THREE.Vector3(0, yFlat, 0),          // keep horizontal to flat/slope junction
-      new THREE.Vector3(0, ySlopeAt0, 0),      // kink down to slope bottom surface
-      new THREE.Vector3(highAncX, highAncY, 0),
-    ];
-  }, [beamB, bot5d, t, cvBotFlat, tCosA, cvBot, slope, totalRun, cover, botFlat]);
+  const botBarPath = steel.botBarPath;
 
   // Top bars (two separate pieces)
-  const topBarPaths = useMemo((): { low: THREE.Vector3[]; high: THREE.Vector3[] } => {
-    const cosA = Math.cos(angle);
-    const topY = (x: number) => slope * x - cvTop;
-    // Low end: from inside low beam → flat plate top → slope ln/4
-    const lowAncX = -botFlat - (beamB - cover);
-    const lowAncY = -cvTopFlat;
-    const lowHookBottom = lowAncY - topHook15d;
-    const ln = botFlat + slopeLen;
-    const ln4 = ln / 4;
-    const low: THREE.Vector3[] = [
-      new THREE.Vector3(lowAncX, lowHookBottom, 0),
-      new THREE.Vector3(lowAncX, lowAncY, 0),
-      new THREE.Vector3(-botFlat, -cvTopFlat, 0),
-    ];
-    if (ln4 <= botFlat) {
-      // bar stays entirely in flat section
-      low.push(new THREE.Vector3(-botFlat + ln4, -cvTopFlat, 0));
-    } else {
-      // bar crosses from flat into slope — add junction kink at X=0
-      const slopeLen4 = ln4 - botFlat;
-      const lowEndX = slopeLen4 * cosA;
-      low.push(new THREE.Vector3(0, -cvTopFlat, 0));       // end of flat section (horizontal)
-      low.push(new THREE.Vector3(lowEndX, topY(lowEndX), 0)); // continue along slope top
-    }
-    // High end: AT-style — outer face at X=totalRun, anchor near outer face
-    const highAncX = totalRun - cover;
-    const highAncY = topY(highAncX);
-    const highHookBottom = Math.max(highAncY - topHook15d, totalRise - beamH + cover);
-    const highStartX = Math.max(0, totalRun - beamB - (slopeLen / 4) * cosA);
-    const high: THREE.Vector3[] = [
-      new THREE.Vector3(highStartX, topY(highStartX), 0),
-      new THREE.Vector3(highAncX, highAncY, 0),
-      new THREE.Vector3(highAncX, highHookBottom, 0),
-    ];
-    return { low, high };
-  }, [botFlat, slopeLen, angle, slope, beamB, cover, cvTopFlat, cvTop, topHook15d, totalRun, totalRise, beamH]);
+  const topBarPaths = steel.topBarPaths;
 
   // Flat plate slab geometry
   const flatSlabGeo = useMemo(() => {
@@ -1042,9 +876,9 @@ export default function StairViewer({ params }: { params: StairParams }) {
   }, [autoPlay, animating]);
 
   return (
-    <div className="space-y-2" data-viewer="stair">
+    <div className="rv-viewer" data-viewer="stair">
       {/* ═══ 工具栏 ═══ */}
-      <div className="flex items-center gap-1.5 flex-wrap">
+      <div className="rv-viewer-toolbar flex items-center gap-1.5 flex-wrap">
         <button
           onClick={() => { setShowCut(!showCut); if (showCut) setCutPosition(null); else setCutPosition(0); }}
           className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${showCut ? 'bg-accent text-white shadow-sm shadow-accent/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
@@ -1107,35 +941,19 @@ export default function StairViewer({ params }: { params: StairParams }) {
       )}
 
       {/* ═══ 3D 画布 ═══ */}
-      <div ref={viewerContainerRef} className={`relative w-full bg-surface overflow-hidden ${fsClass}`}>
+      <div ref={viewerContainerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${fsClass}`}>
         {selected && <InfoTooltip info={selected} />}
 
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5">
-          {[
+        <ViewerControls views={[
             { name: '正面', pos: [centerX, centerY, 4] as [number, number, number] },
             { name: '侧面', pos: [centerX + 4, centerY, 0] as [number, number, number] },
             { name: '俯视', pos: [centerX, centerY + 5, 0.1] as [number, number, number] },
             { name: '透视', pos: [centerX + 3, centerY + 2, 3] as [number, number, number] },
-          ].map(a => (
-            <button key={a.name} onClick={() => setCameraTarget(a.pos)}
-              className="px-2 py-1 rounded-md text-[11px] font-medium cursor-pointer bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors">
-              {a.name}
-            </button>
-          ))}
-          <div className="flex items-center gap-1 ml-1 px-2 py-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60">
-            <span className="text-[11px] text-muted">透明</span>
-            <input type="range" min={0} max={0.5} step={0.02} value={concreteOpacity}
-              onChange={e => setConcreteOpacity(parseFloat(e.target.value))} className="w-12 accent-accent" />
-          </div>
-          <button onClick={toggleFullscreen}
-            className="ml-1 p-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors cursor-pointer"
-            title={isFullscreen ? '退出全屏 (Esc)' : '全屏显示'}>
-            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
-        </div>
+          ]} onView={setCameraTarget} opacity={concreteOpacity} onOpacity={setConcreteOpacity}
+          fullscreen={isFullscreen} onFullscreen={toggleFullscreen} />
 
-        <Canvas camera={{ position: [centerX + 3, centerY + 2, 3], fov: 45 }} scene={{ background: new THREE.Color('#f8fafc') }}>
-          <CameraController targetPosition={cameraTarget} />
+        <Canvas camera={{ position: [centerX + 3, centerY + 2, 3], fov: 45 }} scene={{ background: new THREE.Color('#071725') }}>
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[centerX + 3, centerY + 2, 3]} center={[centerX, centerY, 0]} bounds={[totalRun + botFlat + (params.topPlatformLen + params.botPlatformLen + params.beamB * 2) * S, totalRise + .8, params.flightWidth * S]} />
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 8, 5]} intensity={0.8} castShadow />
           {params.stairType === 'BT'
@@ -1145,11 +963,11 @@ export default function StairViewer({ params }: { params: StairParams }) {
             : <ATStairScene params={params} selected={selected} onSelect={setSelected}
                 concreteOpacity={concreteOpacity} visibleGroups={visibleGroups}
                 showDimensions={showDimensions} cutPosition={cutPosition} />}
-          <Grid args={[20, 20]} position={[0, -0.01, 0]} cellColor="#E2E8F0" sectionColor="#E2E8F0" fadeDistance={15} />
+          <Grid args={[20, 20]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={15} />
           <axesHelper args={[0.5]} />
           <OrbitControls target={[centerX, centerY, 0]} enableDamping dampingFactor={0.1} />
         </Canvas>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 text-white/80 text-[11px] px-4 py-1.5 rounded-full backdrop-blur-md pointer-events-none">
+        <div className="rv-viewer-hints absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/50 text-white/80 text-[11px] px-4 py-1.5 rounded-full backdrop-blur-md pointer-events-none">
           <span>左键旋转</span>
           <span className="w-px h-3 bg-white/20" />
           <span>右键平移</span>

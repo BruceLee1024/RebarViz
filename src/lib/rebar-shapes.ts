@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { S, STIRRUP_CURVE_SAMPLES } from './constants';
+import { S } from './constants';
+import { PlanarRebarCurve, ReversedRebarCurve } from './rebar-curve';
+import { layoutBars } from './layout';
+import { parseRebar, parseRebarBottom } from './rebar';
 
 export type StirrupPlane = 'yz' | 'xz';
 
@@ -12,8 +15,75 @@ export interface CreateStirrupCurvesParams {
 }
 
 export interface StirrupCurves {
-  outerCurve: THREE.CatmullRomCurve3;
-  hookCurves: THREE.CatmullRomCurve3[];
+  outerCurve: PlanarRebarCurve;
+  hookCurves: PlanarRebarCurve[];
+  fullCurve: THREE.CurvePath<THREE.Vector3>;
+  hookClearGapMm: number;
+}
+
+export interface CompositeStirrupHoop extends StirrupShapeSpec {
+  centerOffsetMm: number;
+  normalOffsetMm: number;
+  mirror: boolean;
+}
+
+/** Outer hoop plus independent inner closed hoops. Widths are centreline dimensions. */
+export function beamStirrupBarPositions(widthMm: number, diameterMm: number, top: string, bottom: string): number[] {
+  return [parseRebar(top), parseRebarBottom(bottom)].flatMap(bar =>
+    layoutBars(bar, (widthMm - diameterMm - bar.diameter) * S, [0]).map(p => p.z / S));
+}
+
+export function createCompositeStirrupSpec(params: CreateStirrupShapeSpecParams & { legs?: number; barPositionsMm?: number[] }) {
+  const outer = createStirrupShapeSpec(params);
+  const count = Math.max(1, Math.ceil((params.legs ?? 2) / 2));
+  const innerPositions = resolveInnerLegPositions({ legs: count * 2, width: outer.widthMm, barPositions: params.barPositionsMm });
+  const gap = Math.max(2, params.diameterMm * .25);
+  // Each hoop already has two offset end layers. Keep the complete physical
+  // envelopes separate, including their radii, rather than only their centrelines.
+  const step = 2 * params.diameterMm + 2 * gap;
+  const hoops: CompositeStirrupHoop[] = Array.from({ length: count }, (_, i) => {
+    const left = i === 0 ? -outer.widthMm / 2 : innerPositions[2 * (i - 1)];
+    const right = i === 0 ? outer.widthMm / 2 : innerPositions[2 * (i - 1) + 1];
+    return { ...createStirrupShapeSpec({ ...params, widthMm: right - left }),
+      centerOffsetMm: (left + right) / 2,
+      normalOffsetMm: (i - (count - 1) / 2) * step,
+      mirror: i % 2 === 1 };
+  });
+  return { ...outer, hoops, pieceCount: count,
+    lengthMm: hoops.reduce((sum, hoop) => sum + hoop.lengthMm, 0),
+    normalExtentMm: (count - 1) * step / 2 + params.diameterMm + gap / 2 };
+}
+
+export function createCompositeStirrupCurves(params: CreateStirrupCurvesParams & { legs?: number; barPositions?: number[] }) {
+  const spec = createCompositeStirrupSpec({ widthMm: params.width / S, heightMm: params.height / S,
+    diameterMm: params.diameter, legs: params.legs,
+    barPositionsMm: params.barPositions?.map(p => p / S),
+    cornerRadiusMm: params.cornerRadius === undefined ? undefined : params.cornerRadius / S });
+  const hoops = spec.hoops.map(hoop => {
+    const source = createStirrupCurves({ ...params, width: hoop.widthMm * S });
+    const transform = (curve: PlanarRebarCurve) => new PlanarRebarCurve(curve.path, (_u, _v, t) => {
+      const p = curve.getPoint(t);
+      const sign = hoop.mirror ? -1 : 1;
+      if (params.plane === 'yz') {
+        p.z = sign * p.z + hoop.centerOffsetMm * S;
+        p.y *= sign;
+        p.x += hoop.normalOffsetMm * S;
+      } else {
+        p.x = sign * p.x + hoop.centerOffsetMm * S;
+        p.z *= sign;
+        p.y += hoop.normalOffsetMm * S;
+      }
+      return p;
+    });
+    const outerCurve = transform(source.outerCurve);
+    const hookCurves = source.hookCurves.map(transform);
+    const fullCurve = new THREE.CurvePath<THREE.Vector3>();
+    fullCurve.add(new ReversedRebarCurve(hookCurves[0]));
+    fullCurve.add(outerCurve);
+    fullCurve.add(hookCurves[1]);
+    return { ...source, outerCurve, hookCurves, fullCurve, spec: hoop };
+  });
+  return { spec, hoops };
 }
 
 export interface ResolveInnerLegPositionsParams {
@@ -27,7 +97,6 @@ export interface CreateTieBarHookPointsParams {
   tieDiameter: number;
   sideBarDiameter: number;
   hookAngle?: number;
-  hookVisualScale?: number;
   arcSegments?: number;
 }
 
@@ -70,6 +139,7 @@ export interface TieBarShapeSpec {
   tieDiameterMm: number;
   sideBarDiameterMm: number;
   bendRadiusMm: number;
+  bendCenterOffsetMm: number;
   hookLenMm: number;
   hookAngleDeg: number;
   bodyLenMm: number;
@@ -83,16 +153,6 @@ export interface ResolveTieSideOffsetMmParams {
   sideBarDiameterMm: number;
 }
 
-function toPlanePoint(plane: StirrupPlane, u: number, v: number): THREE.Vector3 {
-  return plane === 'yz'
-    ? new THREE.Vector3(0, v, u)
-    : new THREE.Vector3(u, 0, v);
-}
-
-function tieBarClearance(diameter: number, sideBarDiameter: number): number {
-  return sideBarDiameter / 2 + diameter / 2 + Math.max(diameter * 0.25, 1);
-}
-
 export function createStirrupCurves({
   width,
   height,
@@ -100,82 +160,61 @@ export function createStirrupCurves({
   cornerRadius,
   plane,
 }: CreateStirrupCurvesParams): StirrupCurves {
-  const w2 = width / 2;
-  const h2 = height / 2;
-  const dS = diameter * S;
-  const innerBendR = Math.max(2 * dS, 0.01);
-  const r = cornerRadius ?? innerBendR + dS / 2;
-  const rC = Math.min(r, w2 * 0.45, h2 * 0.45);
+  const spec = createStirrupShapeSpec({
+    widthMm: width / S, heightMm: height / S, diameterMm: diameter,
+    cornerRadiusMm: cornerRadius === undefined ? undefined : cornerRadius / S,
+  });
+  const w2 = spec.widthMm * S / 2;
+  const h2 = spec.heightMm * S / 2;
+  const r = spec.bendRadiusMm * S;
+  const hookLen = spec.hookLenMm * S;
+  // The overlapped corner is two adjacent layers, rather than two bars occupying
+  // the same centreline. Transition smoothly along the body between these layers.
+  // Rendering clearance, not a required construction spacing: keep the two
+  // physical surfaces distinguishable, including when looking at the lap closely.
+  const hookClearGapMm = Math.max(2, diameter * 0.25);
+  const layer = (diameter + hookClearGapMm) * S / 2;
+  const project = (u: number, v: number, normal: number) => plane === 'yz'
+    ? new THREE.Vector3(normal, v, u)
+    : new THREE.Vector3(u, normal, v);
 
-  const path2d = new THREE.Path();
-  path2d.moveTo(-w2 + rC, -h2);
-  path2d.lineTo(w2 - rC, -h2);
-  path2d.absarc(w2 - rC, -h2 + rC, rC, -Math.PI / 2, 0, false);
-  path2d.lineTo(w2, h2 - rC);
-  path2d.absarc(w2 - rC, h2 - rC, rC, 0, Math.PI / 2, false);
-  path2d.lineTo(-w2 + rC, h2);
-  path2d.absarc(-w2 + rC, h2 - rC, rC, Math.PI / 2, Math.PI, false);
-  path2d.lineTo(-w2, -h2 + rC);
-  path2d.absarc(-w2 + rC, -h2 + rC, rC, Math.PI, Math.PI * 1.5, false);
+  // Open body: three rounded corners; the fourth corner belongs to the two hooks.
+  const body = new THREE.Path();
+  body.moveTo(-w2 + r, h2);
+  body.lineTo(w2 - r, h2);
+  body.absarc(w2 - r, h2 - r, r, Math.PI / 2, 0, true);
+  body.lineTo(w2, -h2 + r);
+  body.absarc(w2 - r, -h2 + r, r, 0, -Math.PI / 2, true);
+  body.lineTo(-w2 + r, -h2);
+  body.absarc(-w2 + r, -h2 + r, r, -Math.PI / 2, -Math.PI, true);
+  body.lineTo(-w2, h2 - r);
+  const outerCurve = new PlanarRebarCurve(body, (u, v, t) =>
+    project(u, v, -layer + 2 * layer * t * t * (3 - 2 * t)));
 
-  const pts2d = path2d.getSpacedPoints(STIRRUP_CURVE_SAMPLES);
-  const outerCurve = new THREE.CatmullRomCurve3(
-    pts2d.map((p) => toPlanePoint(plane, p.x, p.y)),
-    true,
-    'centripetal',
-  );
+  const cu = -w2 + r;
+  const cv = h2 - r;
+  const topHook = new THREE.Path();
+  topHook.moveTo(cu, h2);
+  topHook.absarc(cu, cv, r, Math.PI / 2, Math.PI * 5 / 4, false);
+  const topEnd = topHook.getPoint(1);
+  topHook.lineTo(topEnd.x + hookLen * Math.SQRT1_2, topEnd.y - hookLen * Math.SQRT1_2);
 
-  const hookLen = Math.max(10 * dS, 0.075);
-  const hookBendR = Math.max(2.5 * dS, 0.006);
-  const c45 = Math.SQRT1_2;
-  const arcSteps = 12;
-
-  const uC1 = -w2 + rC;
-  const vC1 = h2 - hookBendR;
-  const h1pts: THREE.Vector3[] = [];
-  for (let t = 0; t <= 1; t += 0.25) {
-    h1pts.push(toPlanePoint(plane, uC1 + hookBendR * 2 * (1 - t), h2));
-  }
-  for (let i = 0; i <= arcSteps; i++) {
-    const a = ((3 * Math.PI) / 4) * (i / arcSteps);
-    h1pts.push(toPlanePoint(
-      plane,
-      uC1 - hookBendR * Math.sin(a),
-      vC1 + hookBendR * Math.cos(a),
-    ));
-  }
-  const endU1 = uC1 - hookBendR * Math.sin((3 * Math.PI) / 4);
-  const endV1 = vC1 + hookBendR * Math.cos((3 * Math.PI) / 4);
-  for (let t = 0.1; t <= 1; t += 0.1) {
-    h1pts.push(toPlanePoint(plane, endU1 + hookLen * c45 * t, endV1 - hookLen * c45 * t));
-  }
-
-  const vC2 = h2 - hookBendR;
-  const h2pts: THREE.Vector3[] = [];
-  for (let t = 0; t <= 1; t += 0.25) {
-    h2pts.push(toPlanePoint(plane, -w2, vC2 - hookBendR * 2 * (1 - t)));
-  }
-  for (let i = 0; i <= arcSteps; i++) {
-    const a = ((3 * Math.PI) / 4) * (i / arcSteps);
-    h2pts.push(toPlanePoint(
-      plane,
-      -w2 + hookBendR * (1 - Math.cos(a)),
-      vC2 + hookBendR * Math.sin(a),
-    ));
-  }
-  const endU2 = -w2 + hookBendR * (1 - Math.cos((3 * Math.PI) / 4));
-  const endV2 = vC2 + hookBendR * Math.sin((3 * Math.PI) / 4);
-  for (let t = 0.1; t <= 1; t += 0.1) {
-    h2pts.push(toPlanePoint(plane, endU2 + hookLen * c45 * t, endV2 - hookLen * c45 * t));
-  }
-
-  return {
-    outerCurve,
-    hookCurves: [
-      new THREE.CatmullRomCurve3(h1pts, false, 'centripetal'),
-      new THREE.CatmullRomCurve3(h2pts, false, 'centripetal'),
-    ],
-  };
+  const sideHook = new THREE.Path();
+  sideHook.moveTo(-w2, cv);
+  sideHook.absarc(cu, cv, r, Math.PI, Math.PI / 4, true);
+  const sideEnd = sideHook.getPoint(1);
+  sideHook.lineTo(sideEnd.x + hookLen * Math.SQRT1_2, sideEnd.y - hookLen * Math.SQRT1_2);
+  const hookCurves = [
+    new PlanarRebarCurve(topHook, (u, v) => project(u, v, -layer)),
+    new PlanarRebarCurve(sideHook, (u, v) => project(u, v, layer)),
+  ];
+  // One bar, followed from free tip A, around the body, to free tip B. The free
+  // tips remain open and are never connected by a closing edge or welded mesh.
+  const fullCurve = new THREE.CurvePath<THREE.Vector3>();
+  fullCurve.add(new ReversedRebarCurve(hookCurves[0]));
+  fullCurve.add(outerCurve);
+  fullCurve.add(hookCurves[1]);
+  return { outerCurve, hookCurves, fullCurve, hookClearGapMm };
 }
 
 export function resolveInnerLegPositions({
@@ -187,7 +226,9 @@ export function resolveInnerLegPositions({
   const innerLegs = legs - 2;
 
   if (barPositions && barPositions.length >= 2) {
-    const sorted = [...new Set(barPositions)].sort((a, b) => a - b);
+    // Equivalent endpoints from different rows can differ by floating-point
+    // noise; they are one bar line, not an extra gap available for an inner leg.
+    const sorted = [...new Set(barPositions.map(p => Math.round(p * 1e6) / 1e6))].sort((a, b) => a - b);
     const gaps: number[] = [];
     for (let i = 0; i < sorted.length - 1; i++) {
       gaps.push((sorted[i] + sorted[i + 1]) / 2);
@@ -199,46 +240,71 @@ export function resolveInnerLegPositions({
         gaps[Math.min(Math.round(step * i + step / 2 - 0.5), gaps.length - 1)],
       );
     }
-    return gaps.slice(0, innerLegs);
   }
 
   const spacing = width / (legs - 1);
   return Array.from({ length: innerLegs }, (_, i) => -width / 2 + (i + 1) * spacing);
 }
 
-export function createTieBarHookPoints({
-  sideOffset,
-  tieDiameter,
-  sideBarDiameter,
-  hookAngle = (3 * Math.PI) / 4,
-  hookVisualScale = 1,
-}: CreateTieBarHookPointsParams): THREE.Vector3[] {
-  const tieDiaS = tieDiameter * S;
-  const sideDiaS = sideBarDiameter * S;
-  const bendR = Math.max(sideDiaS / 2 + tieDiaS, tieDiaS * 3);
-  const hookLen = Math.max(10 * tieDiaS, bendR * 1.5);
-  const visualHookLen = hookLen * hookVisualScale;
-  const points: THREE.Vector3[] = [];
-  const clearance = tieBarClearance(tieDiameter, sideBarDiameter) * S;
-  const bodyHalf = Math.max(sideOffset - clearance, 0);
-  const leftBody = new THREE.Vector3(0, 0, -bodyHalf);
-  const rightBody = new THREE.Vector3(0, 0, bodyHalf);
+export interface TieBarCurves {
+  bodyCurve: PlanarRebarCurve;
+  hookCurves: PlanarRebarCurve[];
+  fullCurve: THREE.CurvePath<THREE.Vector3>;
+  spec: TieBarShapeSpec;
+}
 
-  if (hookVisualScale <= 0) {
-    return [leftBody, rightBody];
+/** A single open crosstie, with circular bends wrapping two longitudinal bars. */
+export function createTieBarCurves({
+  sideOffset, tieDiameter, sideBarDiameter, hookAngle = 3 * Math.PI / 4,
+}: CreateTieBarHookPointsParams): TieBarCurves {
+  const spec = createTieBarShapeSpec({ sideOffsetMm: sideOffset / S,
+    tieDiameterMm: tieDiameter, sideBarDiameterMm: sideBarDiameter,
+    hookAngleDeg: hookAngle * 180 / Math.PI });
+  const c = spec.bendCenterOffsetMm * S;
+  const r = spec.bendRadiusMm * S;
+  const hookLen = spec.hookLenMm * S;
+  const project = (u: number, v: number) => new THREE.Vector3(0, -v, u);
+  const body = new THREE.Path();
+  body.moveTo(-c, -r);
+  body.lineTo(c, -r);
+  const bodyCurve = new PlanarRebarCurve(body, project);
+  const hookCurves = [-1, 1].map(side => {
+    const path = new THREE.Path();
+    path.moveTo(side * c, -r);
+    const endAngle = -Math.PI / 2 + side * hookAngle;
+    path.absarc(side * c, 0, r, -Math.PI / 2, endAngle, side < 0);
+    const end = path.getPoint(1);
+    path.lineTo(end.x - side * Math.sin(endAngle) * hookLen,
+      end.y + side * Math.cos(endAngle) * hookLen);
+    return new PlanarRebarCurve(path, project);
+  });
+  const fullCurve = new THREE.CurvePath<THREE.Vector3>();
+  fullCurve.add(new ReversedRebarCurve(hookCurves[0]));
+  fullCurve.add(bodyCurve);
+  fullCurve.add(hookCurves[1]);
+  return { bodyCurve, hookCurves, fullCurve, spec };
+}
+
+export function createTieBarHookPoints(params: CreateTieBarHookPointsParams): THREE.Vector3[] {
+  return createTieBarCurves(params).fullCurve.getPoints(params.arcSegments ?? 160);
+}
+
+/** Preserve tie pitch/count; move the entire series off the stirrup layers. */
+export function staggerTiePositions(
+  positions: number[], stirrupPositions: number[], clearance: number, min: number, max: number,
+): number[] {
+  if (!positions.length) return positions;
+  const canPlace = (offset: number) => positions.every(x => x + offset >= min && x + offset <= max
+    && stirrupPositions.every(s => Math.abs(x + offset - s) >= clearance - 1e-9));
+  if (canPlace(0)) return positions;
+  const maxShift = Math.max(max - positions[positions.length - 1], positions[0] - min);
+  for (let distance = .001; distance <= maxShift + 1e-9; distance += .001) {
+    for (const sign of [1, -1]) if (canPlace(sign * distance)) {
+      return positions.map(x => x + sign * distance);
+    }
   }
-
-  const hookDrop = Math.max(visualHookLen * Math.sin(hookAngle - Math.PI / 2), 2.4 * tieDiaS);
-  const hookTail = Math.max(visualHookLen * Math.cos(hookAngle - Math.PI / 2), 2.4 * tieDiaS);
-
-  points.push(new THREE.Vector3(0, -hookDrop - hookTail * 0.35, -bodyHalf + hookTail));
-  points.push(new THREE.Vector3(0, -hookDrop, -bodyHalf));
-  points.push(leftBody);
-  points.push(rightBody);
-  points.push(new THREE.Vector3(0, -hookDrop, bodyHalf));
-  points.push(new THREE.Vector3(0, -hookDrop - hookTail * 0.35, bodyHalf - hookTail));
-
-  return points;
+  // An impossible arrangement is retained for diagnosis, never silently removed.
+  return positions;
 }
 
 export function resolveTieSideOffsetMm({
@@ -264,9 +330,12 @@ export function createTieBarShapeSpec({
   hookAngleDeg = 135,
 }: CreateTieBarShapeSpecParams): TieBarShapeSpec {
   const bendRadiusMm = Math.max(sideBarDiameterMm / 2 + tieDiameterMm, tieDiameterMm * 3);
-  const hookLenMm = Math.max(10 * tieDiameterMm, bendRadiusMm * 1.5);
-  const clearanceMm = tieBarClearance(tieDiameterMm, sideBarDiameterMm);
-  const bodyLenMm = Math.max(0, sideOffsetMm * 2 - clearanceMm * 2);
+  const hookLenMm = Math.max(10 * tieDiameterMm, 75);
+  // Keep the inner bend tangent to the outside of the longitudinal bar. The
+  // bend centre lies inward; putting it at the bar centre would breach cover.
+  const eccentricityMm = Math.max(bendRadiusMm - sideBarDiameterMm / 2 - tieDiameterMm / 2, 0);
+  const bendCenterOffsetMm = Math.max(sideOffsetMm - eccentricityMm, 0);
+  const bodyLenMm = 2 * bendCenterOffsetMm;
   const hookBendArcMm = bendRadiusMm * (hookAngleDeg * Math.PI / 180);
   const lengthMm = Math.round(bodyLenMm + 2 * (hookBendArcMm + hookLenMm));
 
@@ -275,6 +344,7 @@ export function createTieBarShapeSpec({
     tieDiameterMm,
     sideBarDiameterMm,
     bendRadiusMm,
+    bendCenterOffsetMm,
     hookLenMm,
     hookAngleDeg,
     bodyLenMm,
@@ -306,12 +376,12 @@ export function createStirrupShapeSpec({
   const resolvedCornerRadiusMm = cornerRadiusMm ?? defaultCornerRadiusMm;
   const rC = Math.min(
     Math.max(resolvedCornerRadiusMm, 0),
-    (safeWidthMm / 2) * 0.45,
-    (safeHeightMm / 2) * 0.45,
+    (safeWidthMm / 2) * 0.999,
+    (safeHeightMm / 2) * 0.999,
   );
-  const bendRadiusMm = Math.max(2.5 * diameterMm, 6);
+  const bendRadiusMm = rC;
   const hookLenMm = Math.max(10 * diameterMm, 75);
-  const bodyLenMm = Math.max(0, 2 * (safeWidthMm + safeHeightMm) - 8 * rC + 2 * Math.PI * rC);
+  const bodyLenMm = Math.max(0, 2 * (safeWidthMm + safeHeightMm) - 8 * rC + 1.5 * Math.PI * rC);
   const hookBendArcMm = bendRadiusMm * (135 * Math.PI / 180);
   const lengthMm = Math.round(bodyLenMm + 2 * (hookBendArcMm + hookLenMm));
 
@@ -319,7 +389,7 @@ export function createStirrupShapeSpec({
     widthMm: safeWidthMm,
     heightMm: safeHeightMm,
     diameterMm,
-    cornerRadiusMm: resolvedCornerRadiusMm,
+    cornerRadiusMm: rC,
     bendRadiusMm,
     hookLenMm,
     hookAngleDeg: 135,

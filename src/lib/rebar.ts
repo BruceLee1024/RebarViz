@@ -130,7 +130,7 @@ export function gradeLabel(grade: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 箍筋类型编号 (22G101-1 表 2.2.2-2)
+// 应用内箍筋组合编号；当前采用多个独立封闭箍套叠的表达
 // ═══════════════════════════════════════════════════════════════════
 
 export interface StirrupTypeInfo {
@@ -142,11 +142,11 @@ export interface StirrupTypeInfo {
 
 export const STIRRUP_TYPES: Record<string, StirrupTypeInfo> = {
   'A': { code: 'A', name: '基本箍', legs: 2, description: '单个矩形箍筋' },
-  'B': { code: 'B', name: '复合箍-1拉筋', legs: 4, description: '外箍+1根拉筋' },
-  'C': { code: 'C', name: '复合箍-2拉筋', legs: 6, description: '外箍+2根拉筋' },
-  'D': { code: 'D', name: '复合箍-3拉筋', legs: 8, description: '外箍+3根拉筋' },
-  'E': { code: 'E', name: '复合箍-4拉筋', legs: 10, description: '外箍+4根拉筋' },
-  'F': { code: 'F', name: '复合箍-5拉筋', legs: 12, description: '外箍+5根拉筋' },
+  'B': { code: 'B', name: '复合封闭箍-2个独立箍', legs: 4, description: '外箍+1个独立内箍，沿构件长度错位' },
+  'C': { code: 'C', name: '复合封闭箍-3个独立箍', legs: 6, description: '外箍+2个独立内箍，沿构件长度错位' },
+  'D': { code: 'D', name: '复合封闭箍-4个独立箍', legs: 8, description: '外箍+3个独立内箍，沿构件长度错位' },
+  'E': { code: 'E', name: '复合封闭箍-5个独立箍', legs: 10, description: '外箍+4个独立内箍，沿构件长度错位' },
+  'F': { code: 'F', name: '复合封闭箍-6个独立箍', legs: 12, description: '外箍+5个独立内箍，沿构件长度错位' },
 };
 
 /** 根据肢数推断箍筋类型编号 */
@@ -242,34 +242,24 @@ export function resolveColumnBars(
     return { bars, corner: cornerR, bMiddle: bMidR, hMiddle: hMidR, totalCount: bars.length, isDetailed: true };
   }
 
-  // Legacy: 用 main 均匀分布
+  // Four corners plus distributed interior bars; do not subtract corners twice.
   const mainR = parseRebar(main);
-  const perSide = Math.max(Math.round(mainR.count / 4), 2);
   const hw = innerW / 2, hh = innerH / 2;
-  const bars: ColumnBarPos[] = [];
-
-  // Top side (z = -hh)
-  for (let i = 0; i < perSide; i++) {
-    const isCorner = i === 0 || i === perSide - 1;
-    bars.push({ x: -hw + (innerW * i) / (perSide - 1), z: -hh, diameter: mainR.diameter, grade: mainR.grade, role: isCorner ? 'corner' : 'bMiddle' });
+  const count = Math.max(0, mainR.count);
+  const corners = [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]];
+  const bars: ColumnBarPos[] = corners.slice(0, count).map(([x,z]) => ({ x, z, diameter: mainR.diameter, grade: mainR.grade, role: 'corner' }));
+  const remainder = Math.max(0, count - 4), counts = [0,0,0,0];
+  // Opposite faces receive the next pair before moving to the other axis.
+  const order = [0,2,1,3];
+  for (let i=0;i<remainder;i++) counts[order[i%4]]++;
+  for (let side=0;side<4;side++) {
+    const [x0,z0]=corners[side], [x1,z1]=corners[(side+1)%4];
+    for(let i=1;i<=counts[side];i++) {
+      const t=i/(counts[side]+1);
+      bars.push({ x:x0+(x1-x0)*t,z:z0+(z1-z0)*t,diameter:mainR.diameter,grade:mainR.grade,role:side%2===0?'bMiddle':'hMiddle' });
+    }
   }
-  // Right side (x = hw)
-  for (let i = 1; i < perSide; i++) {
-    const isCorner = i === perSide - 1;
-    bars.push({ x: hw, z: -hh + (innerH * i) / (perSide - 1), diameter: mainR.diameter, grade: mainR.grade, role: isCorner ? 'corner' : 'hMiddle' });
-  }
-  // Bottom side (z = hh)
-  for (let i = 1; i < perSide; i++) {
-    const isCorner = i === perSide - 1;
-    bars.push({ x: hw - (innerW * i) / (perSide - 1), z: hh, diameter: mainR.diameter, grade: mainR.grade, role: isCorner ? 'corner' : 'bMiddle' });
-  }
-  // Left side (x = -hw)
-  for (let i = 1; i < perSide - 1; i++) {
-    bars.push({ x: -hw, z: hh - (innerH * i) / (perSide - 1), diameter: mainR.diameter, grade: mainR.grade, role: 'hMiddle' });
-  }
-
-  const trimmed = bars.slice(0, mainR.count);
-  return { bars: trimmed, corner: mainR, bMiddle: null, hMiddle: null, totalCount: trimmed.length, isDetailed: false };
+  return { bars, corner: mainR, bMiddle: null, hMiddle: null, totalCount: bars.length, isDetailed: false };
 }
 
 /**
@@ -327,20 +317,20 @@ export function tieBarToString(info: TieBarInfo): string {
 
 export const BEAM_PRESETS = {
   simple: {
-    id: 'KL1(2)', b: 250, h: 500, top: '2C20', bottom: '3C22',
+    id: 'KL1(1)', b: 250, h: 500, top: '2C20', bottom: '3C22',
     stirrup: 'A8@150/150(2)', leftSupport: '', rightSupport: '',
     concreteGrade: 'C30' as const, seismicGrade: '三级' as const, cover: 25, spanLength: 4000, hc: 500, supportDepth: 600,
     haunchType: 'none' as const, haunchLength: 0, haunchHeight: 0, haunchSide: 'both' as const,
   },
   standard: {
-    id: 'KL1(3)', b: 300, h: 600, top: '2C25', bottom: '4C25',
+    id: 'KL1(1)', b: 300, h: 600, top: '2C25', bottom: '4C25',
     stirrup: 'A8@100/200(2)', leftSupport: '2C25', rightSupport: '4C25',
     concreteGrade: 'C30' as const, seismicGrade: '三级' as const, cover: 25, spanLength: 4000, hc: 500, supportDepth: 600,
     haunchType: 'none' as const, haunchLength: 0, haunchHeight: 0, haunchSide: 'both' as const,
     sideBar: 'G4C12',
   },
   complex: {
-    id: 'KL2(4)', b: 350, h: 700, top: '4C25(2)', bottom: '6C28(2)',
+    id: 'KL2(1)', b: 350, h: 700, top: '4C25(2)', bottom: '6C28(2)',
     stirrup: 'A10@100/200(4)', leftSupport: '4C25', rightSupport: '6C25(4/2)',
     leftSupport2: '2C25', rightSupport2: '2C25',
     concreteGrade: 'C35' as const, seismicGrade: '二级' as const, cover: 25, spanLength: 6000, hc: 600, supportDepth: 700,
@@ -348,13 +338,13 @@ export const BEAM_PRESETS = {
     sideBar: 'N4C16',
   },
   haunchH: {
-    id: 'KL3(2)', b: 300, h: 600, top: '2C25', bottom: '4C25',
+    id: 'KL3(1)', b: 300, h: 600, top: '2C25', bottom: '4C25',
     stirrup: 'A8@100/200(2)', leftSupport: '2C25', rightSupport: '4C25',
     concreteGrade: 'C30' as const, seismicGrade: '三级' as const, cover: 25, spanLength: 6000, hc: 500, supportDepth: 600,
     haunchType: 'horizontal' as const, haunchLength: 800, haunchHeight: 300, haunchSide: 'both' as const,
   },
   haunchV: {
-    id: 'KL4(2)', b: 300, h: 600, top: '2C25', bottom: '4C25',
+    id: 'KL4(1)', b: 300, h: 600, top: '2C25', bottom: '4C25',
     stirrup: 'A8@100/200(2)', leftSupport: '2C25', rightSupport: '4C25',
     concreteGrade: 'C30' as const, seismicGrade: '三级' as const, cover: 25, spanLength: 4000, hc: 500, supportDepth: 600,
     haunchType: 'vertical' as const, haunchLength: 600, haunchHeight: 150, haunchSide: 'both' as const,
@@ -367,7 +357,7 @@ export const BEAM_PRESETS = {
     sideBar: 'G4C12', spanCount: 3,
   },
   mixedDia: {
-    id: 'KL6(2)', b: 350, h: 700, top: '2C25+2C22', bottom: '4C25+2C22',
+    id: 'KL6(1)', b: 350, h: 700, top: '2C25+2C22', bottom: '4C25+2C22',
     stirrup: 'A10@100/200(4)', leftSupport: '4C25', rightSupport: '4C25',
     concreteGrade: 'C35' as const, seismicGrade: '二级' as const, cover: 25, spanLength: 6000, hc: 600, supportDepth: 700,
     haunchType: 'none' as const, haunchLength: 0, haunchHeight: 0, haunchSide: 'both' as const,

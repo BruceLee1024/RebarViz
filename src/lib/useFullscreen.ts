@@ -61,8 +61,8 @@ export function useFullscreen() {
 
   /** className for the 3D container div */
   const containerClass = isFullscreen
-    ? 'fixed inset-0 z-50 h-screen rounded-none border-0'
-    : 'h-[500px] lg:h-[600px] rounded-xl border border-gray-200';
+    ? 'rv-fullscreen-canvas fixed inset-0 z-50 rounded-none border-0'
+    : 'rv-embedded-canvas';
 
   return { isFullscreen, toggle, containerRef, containerClass };
 }

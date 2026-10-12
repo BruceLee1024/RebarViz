@@ -14,7 +14,7 @@ import { MIN_CLEAR_SPACING, rebarArea } from './construction-rules';
  */
 export function maxBarsPerRow(zRange: number, dia: number): number {
   const minClear = MIN_CLEAR_SPACING.horizontal(dia) * S;
-  return Math.max(Math.floor((zRange + minClear) / (dia * S + minClear)), 1);
+  return Math.max(Math.floor(Math.max(zRange, 0) / (dia * S + minClear)) + 1, 1);
 }
 
 /**
@@ -51,41 +51,35 @@ export interface BarPosition {
  * @param yPositions 各排 Y 坐标 (m)
  * @returns 每根钢筋的 {y, z} 坐标数组
  */
+export function resolveBarRowCounts(rebar: RebarLayout, zRange: number): number[] {
+  if (rebar.perRow && rebar.perRow.length >= 2) return rebar.perRow;
+  const rows = rebar.rows && rebar.rows >= 2 ? rebar.rows
+    : Math.max(Math.ceil(rebar.count / maxBarsPerRow(zRange, rebar.diameter)), 1);
+  let remaining = rebar.count;
+  return Array.from({ length: rows }, (_, i) => {
+    const count = Math.ceil(remaining / (rows - i));
+    remaining -= count;
+    return count;
+  });
+}
+
 export function layoutBars(
-  rebar: RebarLayout,
-  zRange: number,
-  yPositions: number[],
+  rebar: RebarLayout, zRange: number, yPositions: number[], rowDirection: -1 | 1 = -1,
 ): BarPosition[] {
-  let perRow: number[];
-
-  if (rebar.perRow && rebar.perRow.length >= 2) {
-    // 显式指定了每排根数
-    perRow = rebar.perRow;
-  } else if (rebar.rows && rebar.rows >= 2) {
-    // 指定了排数，自动分配
-    const r = rebar.rows;
-    perRow = [];
-    let rem = rebar.count;
-    for (let i = 0; i < r; i++) {
-      const n = Math.ceil(rem / (r - i));
-      perRow.push(n);
-      rem -= n;
-    }
-  } else {
-    // 自动检测是否需要多排
-    const mpr = maxBarsPerRow(zRange, rebar.diameter);
-    const rows = rebar.count > mpr ? 2 : 1;
-    perRow = rows === 2
-      ? [Math.ceil(rebar.count / 2), Math.floor(rebar.count / 2)]
-      : [rebar.count];
+  if (!yPositions.length) return [];
+  const perRow = resolveBarRowCounts(rebar, zRange);
+  const positions = [...yPositions];
+  for (let row = positions.length; row < perRow.length; row++) {
+    const previousD = rebar.segments?.[row - 1]?.diameter ?? rebar.diameter;
+    const currentD = rebar.segments?.[row]?.diameter ?? rebar.diameter;
+    const pitch = (previousD / 2 + Math.max(previousD, currentD, 25) + currentD / 2) * S;
+    positions.push(positions[row - 1] + rowDirection * pitch);
   }
-
   const bars: BarPosition[] = [];
   for (let row = 0; row < perRow.length; row++) {
-    if (row >= yPositions.length) break;
     const zArr = distributeZ(zRange, perRow[row]);
     const rowDia = rebar.segments && rebar.segments[row] ? rebar.segments[row].diameter : undefined;
-    zArr.forEach(z => bars.push({ y: yPositions[row], z, diameter: rowDia }));
+    zArr.forEach(z => bars.push({ y: positions[row], z, diameter: rowDia }));
   }
   return bars;
 }

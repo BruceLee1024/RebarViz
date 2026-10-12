@@ -1,12 +1,12 @@
+import { checkConstructionModel } from './construction-audit';
 /**
  * 规范合规性校验 — 基于 GB50010-2010 和 22G101 图集
  * 在 AI 生成配筋参数后，自动检查是否满足规范要求
  */
-import type { BeamParams, ColumnParams, SlabParams, ShearWallParams, StairParams, FoundationParams, StripFoundationParams, PileCapParams, RaftFoundationParams, ComponentType } from './types';
+import type { BeamParams, ColumnParams, SlabParams, ShearWallParams, StairParams, FoundationParams, StripFoundationParams, PileCapParams, RaftFoundationParams, JointParams, ComponentType } from './types';
 import { parseRebar, parseRebarBottom, parseStirrup, parseSlabRebar, resolveColumnBars } from './rebar';
 import { calcEffectiveDepth } from './layout';
 import { FT, FY, calcLaE } from './anchor';
-import type { SeismicGrade } from './anchor';
 import {
   rebarArea,
   beamRhoMin, BEAM_RHO_MAX, BEAM_MIN_THROUGH_BAR_COUNT,
@@ -1064,10 +1064,12 @@ export function checkRaftCompliance(p: RaftFoundationParams): ComplianceResult[]
 
 export function checkCompliance(
   componentType: ComponentType,
-  params: BeamParams | ColumnParams | SlabParams | ShearWallParams | StairParams | FoundationParams | StripFoundationParams | PileCapParams | RaftFoundationParams,
+  params: BeamParams | ColumnParams | SlabParams | ShearWallParams | StairParams | FoundationParams | StripFoundationParams | PileCapParams | RaftFoundationParams | JointParams,
 ): ComplianceResult[] {
-  switch (componentType) {
-    case 'beam': return checkBeamCompliance(params as BeamParams);
+  const checks = ((): ComplianceResult[] => { switch (componentType) {
+    case 'beam': return (params as BeamParams).beamKind === 'coupling'
+      ? [{ field: '-', rule: '连梁检查范围', status: 'warn', message: '当前为普通连梁配筋示意，未套用框架梁通过结论；墙内锚固、跨高比、斜向钢筋与连梁抗剪需专项复核。' }]
+      : checkBeamCompliance(params as BeamParams);
     case 'column': return checkColumnCompliance(params as ColumnParams);
     case 'slab': return checkSlabCompliance(params as SlabParams);
     case 'shearwall': return checkShearWallCompliance(params as ShearWallParams);
@@ -1076,7 +1078,18 @@ export function checkCompliance(
     case 'stripfoundation': return checkStripFoundationCompliance(params as StripFoundationParams);
     case 'pilecap': return checkPileCapCompliance(params as PileCapParams);
     case 'raft': return checkRaftCompliance(params as RaftFoundationParams);
-    case 'joint': return [{ field: '-', rule: 'GB50010', status: 'pass', message: '节点构造校验暂未实现' }];
-    default: return [{ field: '-', rule: '-', status: 'pass', message: '暂未实现' }];
+    case 'joint': return checkJointConstruction(params as JointParams);
+    default: return [{ field: '-', rule: '-', status: 'warn', message: '该构件尚未接入构造检查' }];
   }
+  })();
+  return [...checks, ...checkConstructionModel(componentType, params)];
+}
+
+/** Basic geometric constraints only; joint force and anchorage checks require a full connection model. */
+export function checkJointConstruction(p: JointParams): ComplianceResult[] {
+  const results: ComplianceResult[] = [{ field: '-', rule: '检查范围', status: 'warn', message: '节点仅检查截面容纳条件；锚固、节点核心区抗剪与梁柱钢筋碰撞需结合完整节点复核。' }];
+  if (p.beamB > p.colB) results.push({ field: 'beamB', rule: '几何容纳', status: 'warn', message: '梁宽大于柱宽，请复核梁筋在节点中的实际锚固路径。' });
+  const c = p.cover || 25;
+  if (2 * c >= Math.min(p.colB, p.colH, p.beamB, p.beamH)) results.push({ field: 'cover', rule: '几何容纳', status: 'fail', message: '保护层占满截面，无法容纳钢筋。' });
+  return results;
 }

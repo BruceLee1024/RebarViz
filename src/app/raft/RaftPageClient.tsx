@@ -1,5 +1,13 @@
 'use client';
 
+import type { BeamWorkspacePageProps } from '@/lib/beam-workspace';
+
+import { BeamEntryLink } from '@/components/BeamEntryLink';
+
+import { FormworkCalc } from '@/components/FormworkCalc';
+
+import { WorkbenchLayout, WorkbenchTabs } from '@/components/WorkbenchLayout';
+
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -21,19 +29,19 @@ import { buildRaftContext } from '@/lib/ai-context';
 import { decodeSharedParam } from '@/lib/share-params';
 import { RaftAnchorPanel } from '@/components/RaftAnchorPanel';
 import { CompliancePanel, ComplianceBadge } from '@/components/CompliancePanel';
-import { checkRaftCompliance } from '@/lib/compliance';
+import { checkCompliance } from '@/lib/compliance';
 import { useHistory } from '@/lib/useHistory';
 import { HistoryPanel } from '@/components/HistoryPanel';
 import { MetricComparePanel } from '@/components/MetricComparePanel';
 import { metricFromNumber, metricFromText } from '@/lib/compare-utils';
-import { Sparkles } from 'lucide-react';
 
 const DATA_TABS = [
   { key: 'section', label: '截面图' },
   { key: 'guide', label: '识图说明' },
-  { key: 'compliance', label: '规范校验' },
+  { key: 'compliance', label: '构造检查' },
   { key: 'weight', label: '用量估算' },
   { key: 'concrete', label: '混凝土量' },
+  { key: 'formwork', label: '模板量' },
   { key: 'anchor', label: '锚固构造' },
   { key: 'compare', label: '方案对比' },
 ] as const;
@@ -55,17 +63,20 @@ const DEFAULT: RaftFoundationParams = {
   ...RAFT_PRESETS.standard,
 };
 
-export function RaftPageClient() {
+export function RaftPageClient({ initialParams, workspaceDefaults, onParamsChange, workspaceTitle }: BeamWorkspacePageProps<RaftFoundationParams> = {}) {
+  const defaults = workspaceDefaults ?? DEFAULT;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [params, setParams] = useState<RaftFoundationParams>(() => {
+    if (initialParams) return initialParams;
     const p = searchParams.get('p');
     const shared = decodeSharedParam<Partial<RaftFoundationParams>>(p ?? undefined);
     if (shared && shared.lx && shared.ly) {
-      return { ...DEFAULT, ...shared };
+      return { ...defaults, ...shared };
     }
-    return DEFAULT;
+    return defaults;
   });
+  useEffect(() => { onParamsChange?.(params); }, [params, onParamsChange]);
   const [dataTab, setDataTab] = useState<typeof DATA_TABS[number]['key']>('section');
   const aiMessage = searchParams.get('ai') || undefined;
   const [showAI, setShowAI] = useState(!!aiMessage);
@@ -73,7 +84,7 @@ export function RaftPageClient() {
   const update = (patch: Partial<RaftFoundationParams>) => setParams(p => ({ ...p, ...patch }));
   const calcResult = useMemo(() => calcRaft(params), [params]);
   const concreteResult = useMemo(() => calcRaftConcrete(params), [params]);
-  const complianceResults = useMemo(() => checkRaftCompliance(params), [params]);
+  const complianceResults = useMemo(() => checkCompliance('raft', params), [params]);
   const aiContext = useMemo(() => buildRaftContext(params), [params]);
 
   const {
@@ -136,33 +147,60 @@ export function RaftPageClient() {
     ].filter((item): item is NonNullable<typeof item> => Boolean(item));
   }, [compareParams, params, calcResult.items, concreteResult.totalVolume]);
 
-  return (
-    <main className="px-4 py-4">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 左栏：参数输入 */}
-        <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-primary">参数输入</h2>
-              <div className="flex items-center gap-2">
-                <ResetButton onClick={() => setParams(DEFAULT)} />
-                <ShareButton params={params} />
-              </div>
-            </div>
+  const beamEditor0 = params.raftType === 'beamSlab' && (
+              <Section title="基础主梁 JL 参数 (22G101-3 §4)" defaultOpen={!!workspaceTitle}>
+                <NumField label="梁宽 bw (mm)" value={params.beamB ?? 600} onChange={v => update({ beamB: v })} min={300} max={1500} />
+                <NumField label="梁高 hw (mm)" value={params.beamH ?? 900} onChange={v => update({ beamH: v })} min={400} max={2500} />
+                <div>
+                  <label className="text-xs text-muted mb-1.5 block">梁板位置关系</label>
+                  <div className="grid grid-cols-3 gap-1">
+                    {([
+                      { val: 'low', label: '低板位' },
+                      { val: 'mid', label: '中板位' },
+                      { val: 'high', label: '高板位' },
+                    ] as const).map(({ val, label }) => (
+                      <button key={val} onClick={() => update({ beamPosition: val })}
+                        className={`py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all border ${(params.beamPosition ?? 'low') === val
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-300'
+                          }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-muted mt-1">
+                    {(params.beamPosition ?? 'low') === 'low' && '梁底与板底齐平，梁向上凸出'}
+                    {params.beamPosition === 'high' && '梁顶与板顶齐平，梁向下凸出'}
+                    {params.beamPosition === 'mid' && '板在梁高度中部'}
+                  </p>
+                </div>
+                <Field label="底部贯通纵筋 (B)" value={params.beamBottom ?? '4C25'} onChange={v => update({ beamBottom: v })} placeholder="如: 4C25" />
+                <Field label="顶部贯通纵筋 (T)" value={params.beamTop ?? '6C25'} onChange={v => update({ beamTop: v })} placeholder="如: 6C25" />
+                <Field label="箍筋" value={params.beamStirrup ?? 'A10@150(4)'} onChange={v => update({ beamStirrup: v })} placeholder="如: A10@150(4)" />
+              </Section>
+            );
 
+  return (
+    <WorkbenchLayout
+      title={workspaceTitle ?? "筏板配筋工作台"}
+      summary={<>{params.id}<span>·</span>筏板基础</>}
+      actions={<>{!workspaceTitle && params.raftType === 'beamSlab' && <BeamEntryLink params={params} system="raft" />}<ShareButton params={params} className="rv-button rv-share-button" /></>}
+      inspector={
+        <>
+          <div className="rv-inspector-tools"><span>快速示例</span><ResetButton onClick={() => setParams(defaults)} /></div>
+          <div className="rv-parameter-form">{workspaceTitle && beamEditor0}
             <div className="mb-4">
-              <label className="text-xs text-muted mb-2 block">快速示例</label>
+
               <div className="flex flex-wrap gap-1.5">
                 {presetList.map(({ key, label, dot }) => (
                   <button key={key} onClick={() => applyPreset(key)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    className="rv-preset-button">
                     <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
               </div>
             </div>
-
             <div className="space-y-3">
               <Field label="筏板编号" value={params.id} onChange={v => update({ id: v })} />
 
@@ -176,11 +214,10 @@ export function RaftPageClient() {
                     { val: 'flatPlate', label: '板带式' },
                   ] as const).map(({ val, label }) => (
                     <button key={val} onClick={() => update({ raftType: val })}
-                      className={`py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all border ${
-                        params.raftType === val
-                          ? 'bg-accent text-white border-accent shadow-sm'
-                          : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-300'
-                      }`}>
+                      className={`py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all border ${params.raftType === val
+                        ? 'bg-accent text-white border-accent shadow-sm'
+                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-300'
+                        }`}>
                       {label}
                     </button>
                   ))}
@@ -196,7 +233,6 @@ export function RaftPageClient() {
               <NumField label="Y 向宽度 ly (mm)" value={params.ly} onChange={v => update({ ly: v })} min={3000} max={40000} />
               <NumField label="板厚 h (mm) (LPB平板厂)" value={params.h} onChange={v => update({ h: v })} min={300} max={2000} />
             </div>
-
             <Section title="底部配筋">
               <Field label="X向底筋" value={params.bottomBarX} onChange={v => update({ bottomBarX: v })} placeholder="如: C16@150" />
               <Field label="Y向底筋" value={params.bottomBarY} onChange={v => update({ bottomBarY: v })} placeholder="如: C16@150" />
@@ -210,7 +246,6 @@ export function RaftPageClient() {
                 ]}
               />
             </Section>
-
             <Section title="顶部配筋">
               <Field label="X向面筋" value={params.topBarX} onChange={v => update({ topBarX: v })} placeholder="如: C12@200" />
               <Field label="Y向面筋" value={params.topBarY} onChange={v => update({ topBarY: v })} placeholder="如: C12@200" />
@@ -224,7 +259,6 @@ export function RaftPageClient() {
                 ]}
               />
             </Section>
-
             <Section title="柱网参数">
               <NumField label="柱截面 X (mm)" value={params.colBx} onChange={v => update({ colBx: v })} min={200} max={1000} />
               <NumField label="柱截面 Y (mm)" value={params.colBy} onChange={v => update({ colBy: v })} min={200} max={1000} />
@@ -234,43 +268,7 @@ export function RaftPageClient() {
               <NumField label="X 向柱距 (mm)" value={params.colSpacingX} onChange={v => update({ colSpacingX: v })} min={3000} max={12000} />
               <NumField label="Y 向柱距 (mm)" value={params.colSpacingY} onChange={v => update({ colSpacingY: v })} min={3000} max={12000} />
             </Section>
-
-            {/* ── 梁板式筏基专属参数 (JL) ── */}
-            {params.raftType === 'beamSlab' && (
-              <Section title="基础主梁 JL 参数 (22G101-3 §4)">
-                <NumField label="梁宽 bw (mm)" value={params.beamB ?? 600} onChange={v => update({ beamB: v })} min={300} max={1500} />
-                <NumField label="梁高 hw (mm)" value={params.beamH ?? 900} onChange={v => update({ beamH: v })} min={400} max={2500} />
-                <div>
-                  <label className="text-xs text-muted mb-1.5 block">梁板位置关系</label>
-                  <div className="grid grid-cols-3 gap-1">
-                    {([
-                      { val: 'low', label: '低板位' },
-                      { val: 'mid', label: '中板位' },
-                      { val: 'high', label: '高板位' },
-                    ] as const).map(({ val, label }) => (
-                      <button key={val} onClick={() => update({ beamPosition: val })}
-                        className={`py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all border ${
-                          (params.beamPosition ?? 'low') === val
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                            : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-300'
-                        }`}>
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-muted mt-1">
-                    {(params.beamPosition ?? 'low') === 'low' && '梁底与板底齐平，梁向上凸出'}
-                    {params.beamPosition === 'high' && '梁顶与板顶齐平，梁向下凸出'}
-                    {params.beamPosition === 'mid' && '板在梁高度中部'}
-                  </p>
-                </div>
-                <Field label="底部贯通纵筋 (B)" value={params.beamBottom ?? '4C25'} onChange={v => update({ beamBottom: v })} placeholder="如: 4C25" />
-                <Field label="顶部贯通纵筋 (T)" value={params.beamTop ?? '6C25'} onChange={v => update({ beamTop: v })} placeholder="如: 6C25" />
-                <Field label="箍筋" value={params.beamStirrup ?? 'A10@150(4)'} onChange={v => update({ beamStirrup: v })} placeholder="如: A10@150(4)" />
-              </Section>
-            )}
-
-            {/* ── 平板式筏基板带专属参数 (ZXB/KZB) ── */}
+            {!workspaceTitle && beamEditor0}
             {params.raftType === 'flatPlate' && (
               <Section title="柱下板带 ZXB 参数 (22G101-3 §5)">
                 <NumField label="ZXB 板带宽度 (mm)" value={params.colStripWidth ?? Math.round(Math.min(params.colSpacingX, params.colSpacingY) / 2)}
@@ -280,158 +278,122 @@ export function RaftPageClient() {
                 <p className="text-[10px] text-muted">KZB跨中板带配筋使用上方底部配筋区域指定即可</p>
               </Section>
             )}
-
             <Section title="材料">
               <SelectField label="混凝土等级" value={params.concreteGrade} onChange={v => update({ concreteGrade: v as ConcreteGrade })}
                 options={CONCRETE_GRADES.map(g => ({ value: g, label: g }))} />
               <SelectField label="抗震等级" value={params.seismicGrade} onChange={v => update({ seismicGrade: v as SeismicGrade })}
                 options={SEISMIC_GRADES.map(g => ({ value: g, label: g }))} />
               <NumField label="保护层 (mm)" value={params.cover} onChange={v => update({ cover: v })} min={35} max={70} />
-            </Section>
+            </Section></div><Section title="图例说明"><Legend items={[
+              { color: '#C0392B', label: 'X向底部钢筋' },
+              { color: '#2980B9', label: 'Y向底部钢筋' },
+              { color: '#E67E22', label: 'X向面筋' },
+              { color: '#27AE60', label: 'Y向面筋' },
+              { color: '#8E44AD', label: '柱插筋' },
+              ...(params.raftType === 'beamSlab' ? [
+                { color: '#C0392B', label: 'JL底部纵筋' },
+                { color: '#E67E22', label: 'JL顶部纵筋' },
+                { color: '#27AE60', label: 'JL箍筋' },
+                { color: '#9EB6C8', label: 'JL基础梁混凝土', opacity: 0.55 },
+              ] : []),
+              ...(params.raftType === 'flatPlate' ? [
+                { color: '#D35400', label: 'ZXB柱下板带附加筋' },
+              ] : []),
+              { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
+            ]} /></Section>
+          <Section title="历史记录与收藏"><HistoryPanel
+            history={history}
+            favorites={favorites}
+            isFavorite={isFavorite(params)}
+            onSelect={handleSelectHistory}
+            onAddFavorite={() => addToFavorites(params, params.id)}
+            onRemoveFavorite={removeFromFavorites}
+            onRemoveHistory={removeFromHistory}
+            onClearHistory={clearHistory}
+          /></Section>
+        </>}
+      viewer={<RaftViewer params={params} />}
+      analysisTabs={<WorkbenchTabs tabs={DATA_TABS} active={dataTab} onChange={setDataTab} badges={{ compliance: <ComplianceBadge results={complianceResults} /> }} />}
+      analysis={<>{dataTab === 'section' && (
+        <>
+
+          <div className="flex justify-center">
+            <RaftCrossSection params={params} />
           </div>
-
-          <Legend items={[
-            { color: '#C0392B', label: 'X向底部钢筋' },
-            { color: '#2980B9', label: 'Y向底部钢筋' },
-            { color: '#E67E22', label: 'X向面筋' },
-            { color: '#27AE60', label: 'Y向面筋' },
-            { color: '#8E44AD', label: '柱插筋' },
-            ...(params.raftType === 'beamSlab' ? [
-              { color: '#C0392B', label: 'JL底部纵筋' },
-              { color: '#E67E22', label: 'JL顶部纵筋' },
-              { color: '#27AE60', label: 'JL箍筋' },
-              { color: '#9EB6C8', label: 'JL基础梁混凝土', opacity: 0.55 },
-            ] : []),
-            ...(params.raftType === 'flatPlate' ? [
-              { color: '#D35400', label: 'ZXB柱下板带附加筋' },
-            ] : []),
-            { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
-          ]} />
-
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <h3 className="text-sm font-semibold text-primary mb-3">历史记录</h3>
-            <HistoryPanel
-              history={history}
-              favorites={favorites}
-              isFavorite={isFavorite(params)}
-              onSelect={handleSelectHistory}
-              onAddFavorite={() => addToFavorites(params, params.id)}
-              onRemoveFavorite={removeFromFavorites}
-              onRemoveHistory={removeFromHistory}
-              onClearHistory={clearHistory}
-            />
-          </div>
-        </div>
-
-        {/* 中栏：3D模型 + 数据 tab */}
-        <div className={`${showAI ? 'lg:col-span-6' : 'lg:col-span-9'} space-y-4 min-w-0 transition-all`}>
-          <RaftViewer params={params} />
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
-              <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
-                {DATA_TABS.map(t => (
-                  <button key={t.key} onClick={() => setDataTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
-                    {t.label}
-                    {t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setShowAI(a => !a)}
-                className={`ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100'}`}>
-                <Sparkles className="w-3.5 h-3.5" />
-                AI 助手
-              </button>
-            </div>
-            <div className="p-5">
-              {dataTab === 'section' && (
-                <>
-                  <h2 className="text-sm font-semibold text-primary mb-3">底面配筋示意（俯视）</h2>
-                  <div className="flex justify-center">
-                    <RaftCrossSection params={params} />
-                  </div>
-                </>
-              )}
-              {dataTab === 'guide' && <RaftExplain params={params} />}
-              {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
-              {dataTab === 'weight' && <WeightCalc result={calcResult} />}
-              {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
-              {dataTab === 'anchor' && <RaftAnchorPanel params={params} />}
-              {dataTab === 'compare' && (
-                <div className="space-y-4">
-                  {compareParams ? (
-                    <MetricComparePanel
-                      metrics={compareMetrics}
-                      summary={{
-                        title: '钢筋用量变化',
-                        valueA: calcRaft(compareParams).items.reduce((sum, item) => sum + item.weightKg, 0),
-                        valueB: calcResult.items.reduce((sum, item) => sum + item.weightKg, 0),
-                        unit: 'kg',
-                        labelA: compareLabel,
-                        labelB: '当前方案',
-                      }}
-                      labelA={compareLabel}
-                      labelB="当前方案"
-                    />
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-sm text-gray-500 mb-3">从历史记录或收藏中选择一个方案进行对比</p>
-                      <div className="flex flex-wrap justify-center gap-2">
-                        {[...favorites, ...history].slice(0, 6).map(item => (
-                          <button
-                            key={item.id}
-                            onClick={() => handleSelectForCompare(item.id, favorites.some(f => f.id === item.id))}
-                            className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg cursor-pointer transition-colors"
-                          >
-                            {item.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {compareParams && (
+        </>
+      )}
+        {dataTab === 'guide' && <RaftExplain params={params} />}
+        {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
+        {dataTab === 'weight' && <WeightCalc result={calcResult} />}
+        {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
+        <div hidden={dataTab !== 'formwork'}><FormworkCalc componentType="raft" params={params} /></div>
+        {dataTab === 'anchor' && <RaftAnchorPanel params={params} />}
+        {dataTab === 'compare' && (
+          <div className="space-y-4">
+            {compareParams ? (
+              <MetricComparePanel
+                metrics={compareMetrics}
+                summary={{
+                  title: '钢筋用量变化',
+                  valueA: calcRaft(compareParams).items.reduce((sum, item) => sum + item.weightKg, 0),
+                  valueB: calcResult.items.reduce((sum, item) => sum + item.weightKg, 0),
+                  unit: 'kg',
+                  labelA: compareLabel,
+                  labelB: '当前方案',
+                }}
+                labelA={compareLabel}
+                labelB="当前方案"
+              />
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-sm text-gray-500 mb-3">从历史记录或收藏中选择一个方案进行对比</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {[...favorites, ...history].slice(0, 6).map(item => (
                     <button
-                      onClick={() => setCompareParams(null)}
-                      className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+                      key={item.id}
+                      onClick={() => handleSelectForCompare(item.id, favorites.some(f => f.id === item.id))}
+                      className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg cursor-pointer transition-colors"
                     >
-                      清除对比方案
+                      {item.name}
                     </button>
-                  )}
+                  ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+            {compareParams && (
+              <button
+                onClick={() => setCompareParams(null)}
+                className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                清除对比方案
+              </button>
+            )}
           </div>
-        </div>
-
-        {/* 右栏：AI 侧边栏 */}
-        {showAI && (
-          <div className="lg:col-span-3">
-            <AISidebar
-              componentType="raft"
-              currentParams={params}
-              onApplyParams={(p) => update(p as Partial<RaftFoundationParams>)}
-              context={aiContext}
-              notationSlot={<RaftExplain params={params} />}
-              initialMessage={aiMessage}
-              onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
-              onNavigateComponent={(type: ComponentType, message?: string) => {
-                const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
-                router.push(`/${type}${encoded}`);
-              }}
-              onApplyPreset={(preset) => {
-                if (preset in RAFT_PRESETS) applyPreset(preset as keyof typeof RAFT_PRESETS);
-              }}
-              onGetCurrentState={() => aiContext}
-              onRunComplianceCheck={() => ({
-                results: complianceResults,
-                summary: `校验完成: ${complianceResults.filter(r => r.status === 'pass').length}项通过, ${complianceResults.filter(r => r.status === 'fail').length}项不通过, ${complianceResults.filter(r => r.status === 'warn').length}项警告`,
-              })}
-              onSaveFavorite={(name, note) => addToFavorites(params, name, note)}
-              onResetParams={() => setParams({ ...RAFT_PRESETS.standard })}
-            />
-          </div>
-        )}
-      </div>
-    </main>
+        )}</>}
+      assistant={showAI ? <AISidebar
+        componentType="raft"
+        currentParams={params}
+        onApplyParams={(p) => update(p as Partial<RaftFoundationParams>)}
+        context={aiContext}
+        notationSlot={<RaftExplain params={params} />}
+        initialMessage={aiMessage}
+        onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
+        onNavigateComponent={(type: ComponentType, message?: string) => {
+          const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
+          router.push(`/${type}${encoded}`);
+        }}
+        onApplyPreset={(preset) => {
+          if (preset in RAFT_PRESETS) applyPreset(preset as keyof typeof RAFT_PRESETS);
+        }}
+        onGetCurrentState={() => aiContext}
+        onRunComplianceCheck={() => ({
+          results: complianceResults,
+          summary: `校验完成: ${complianceResults.filter(r => r.status === 'pass').length}项通过, ${complianceResults.filter(r => r.status === 'fail').length}项不通过, ${complianceResults.filter(r => r.status === 'warn').length}项警告`,
+        })}
+        onSaveFavorite={(name, note) => addToFavorites(params, name, note)}
+        onResetParams={() => setParams(defaults)}
+      /> : undefined}
+      onAssistantToggle={() => setShowAI(value => !value)}
+    />
   );
 }

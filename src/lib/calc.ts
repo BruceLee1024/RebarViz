@@ -1,9 +1,19 @@
-import { parseRebar, parseRebarBottom, parseStirrup, parseSlabRebar, parseSideBar, parseTieBar, autoTieBar, resolveColumnBars } from './rebar';
-import { calcSupportRebarLength, calcLlE, calcSlabBottomAnchor, calcBeamEndAnchor, calcBeamSideBarAnchor, calcLa, calcLaE, FT, FY } from './anchor';
-import { calcEffectiveDepth } from './layout';
+import { wallDistributedReinforcement } from './wall-reinforcement';
+import { wallOpening, overhangs, stripDistributedPositions, stripTransverseStations } from './quantity-geometry';
+import { stairReinforcement } from './stair-reinforcement';
+import { raftBeamArrangement, raftColumnStripPositions } from './raft-reinforcement';
+import { bentHorizontalCurve, foundationBeamReinforcement } from './foundation-reinforcement';
+import { calcLaTable } from './anchor';
+import { slabBarPositions, slabReinforcement } from './slab-reinforcement';
+import { columnSectionBars, columnHoopLayout, foundationInsertSpec } from './reinforcement-layout';
+import { beamLongitudinalLayout, BEAM_BAR_NAMES } from './beam-longitudinal';
+import { wallTiePositions } from './quantity-geometry';
+import { parseRebar, parseRebarBottom, parseStirrup, parseSlabRebar, parseSideBar, parseTieBar, autoTieBar } from './rebar';
+import { calcSupportRebarLength, calcLlE, calcBeamSideBarAnchor, calcLaE, FT, FY } from './anchor';
+import { calcEffectiveDepth, resolveBarRowCounts } from './layout';
 import type { BeamParams, ColumnParams, SlabParams, ShearWallParams, StairParams, FoundationParams, StripFoundationParams, PileCapParams, RaftFoundationParams } from './types';
-import { rebarWeightPerM, beamDenseZoneLength, rebarArea, slabBottomAnchorDetail, slabNegBarExtend, slabNegBarBend, stirrupCutLength, stirrupHookLen, wasteFactor, WASTE_RATE, bendAdjustment, determineColFoundAnchor } from './construction-rules';
-import { createStirrupShapeSpec, createTieBarShapeSpec, resolveTieSideOffsetMm } from './rebar-shapes';
+import { rebarWeightPerM, beamDenseZoneLength, rebarArea, WASTE_RATE, bendAdjustment, determineColFoundAnchor, determinePileCapRebarEnd } from './construction-rules';
+import { beamStirrupBarPositions, createCompositeStirrupSpec, createTieBarShapeSpec, resolveTieSideOffsetMm } from './rebar-shapes';
 
 /** 钢筋理论重量 kg/m — 代理到 construction-rules */
 function w(diameter: number): number {
@@ -187,132 +197,18 @@ export function calcBeam(p: BeamParams): CalcResult {
     total += weightKg;
   }
 
-  // 上部通长筋 (含两端锚固, 按22G101-1)
-  if (top.segments && top.segments.length >= 2) {
-    // 混合直径: 每段分别计算锚固和重量
-    for (let si = 0; si < top.segments.length; si++) {
-      const seg = top.segments[si];
-      const segAnchor = calcBeamEndAnchor(seg.grade, seg.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-      const segAnchorLen = segAnchor.canStraight ? segAnchor.straightLen : bentAnchorCutLen(segAnchor.bentStraightPart, segAnchor.bentBendPart, seg.diameter);
-      const segL = (totalNet + 2 * segAnchorLen) / 1000;
-      const bendDeduct = Math.round(bendAdjustment(seg.diameter, 90));
-      const anchorDesc = segAnchor.canStraight
-        ? `直锚${segAnchor.straightLen}mm` : `弯锚(直段${segAnchor.bentStraightPart}+弯折${segAnchor.bentBendPart}-弯调${bendDeduct}mm)`;
-      const segFormula: FormulaStep[] = [
-        ...beamEndAnchorSteps(seg.grade, seg.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-        { label: '单根长度', formula: 'L = 净跨总长 + 2×锚固', substitution: `= ${totalNet} + 2×${segAnchorLen}`, result: `= ${(totalNet + 2 * segAnchorLen)} mm = ${segL.toFixed(2)} m` },
-      ];
-      const rowLabel = si === 0 ? '外排' : `第${si + 1}排`;
-      push(`上部通长筋(${rowLabel})`, `${seg.count}${seg.grade}${seg.diameter}`, `${segL.toFixed(2)}m × ${seg.count} (${anchorDesc}×2)`,
-        seg.grade, seg.diameter, seg.count, segL, '#C0392B', segFormula);
-    }
-  } else {
-    const topAnchor = calcBeamEndAnchor(top.grade, top.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const topAnchorLen = topAnchor.canStraight ? topAnchor.straightLen : bentAnchorCutLen(topAnchor.bentStraightPart, topAnchor.bentBendPart, top.diameter);
-    const topL = (totalNet + 2 * topAnchorLen) / 1000;
-    const topBendDeduct = Math.round(bendAdjustment(top.diameter, 90));
-    const topAnchorDesc = topAnchor.canStraight
-      ? `直锚${topAnchor.straightLen}mm` : `弯锚(直段${topAnchor.bentStraightPart}+弯折${topAnchor.bentBendPart}-弯调${topBendDeduct}mm)`;
-    const topFormula: FormulaStep[] = [
-      ...beamEndAnchorSteps(top.grade, top.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '单根长度', formula: 'L = 净跨总长 + 2×锚固', substitution: `= ${totalNet} + 2×${topAnchorLen}`, result: `= ${(totalNet + 2 * topAnchorLen)} mm = ${topL.toFixed(2)} m` },
-    ];
-    const topRowDesc = top.perRow && top.perRow.length >= 2 ? `，${top.perRow.length}排(${[...top.perRow].reverse().join('/')})` : (top.rows && top.rows >= 2 ? `，${top.rows}排` : '');
-    push('上部通长筋', p.top, `${topL.toFixed(2)}m × ${top.count}${topRowDesc} (${topAnchorDesc}×2)`,
-      top.grade, top.diameter, top.count, topL, '#C0392B', topFormula);
-  }
-
-  // 下部通长筋 (含两端锚固, 按22G101-1)
-  if (bot.segments && bot.segments.length >= 2) {
-    for (let si = 0; si < bot.segments.length; si++) {
-      const seg = bot.segments[si];
-      const segAnchor = calcBeamEndAnchor(seg.grade, seg.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-      const segAnchorLen = segAnchor.canStraight ? segAnchor.straightLen : bentAnchorCutLen(segAnchor.bentStraightPart, segAnchor.bentBendPart, seg.diameter);
-      const segL = (totalNet + 2 * segAnchorLen) / 1000;
-      const bendDeduct = Math.round(bendAdjustment(seg.diameter, 90));
-      const anchorDesc = segAnchor.canStraight
-        ? `直锚${segAnchor.straightLen}mm` : `弯锚(直段${segAnchor.bentStraightPart}+弯折${segAnchor.bentBendPart}-弯调${bendDeduct}mm)`;
-      const segFormula: FormulaStep[] = [
-        ...beamEndAnchorSteps(seg.grade, seg.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-        { label: '单根长度', formula: 'L = 净跨总长 + 2×锚固', substitution: `= ${totalNet} + 2×${segAnchorLen}`, result: `= ${(totalNet + 2 * segAnchorLen)} mm = ${segL.toFixed(2)} m` },
-      ];
-      const rowLabel = si === 0 ? '外排' : `第${si + 1}排`;
-      push(`下部通长筋(${rowLabel})`, `${seg.count}${seg.grade}${seg.diameter}`, `${segL.toFixed(2)}m × ${seg.count} (${anchorDesc}×2)`,
-        seg.grade, seg.diameter, seg.count, segL, '#C0392B', segFormula);
-    }
-  } else {
-    const botAnchor = calcBeamEndAnchor(bot.grade, bot.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const botAnchorLen = botAnchor.canStraight ? botAnchor.straightLen : bentAnchorCutLen(botAnchor.bentStraightPart, botAnchor.bentBendPart, bot.diameter);
-    const botL = (totalNet + 2 * botAnchorLen) / 1000;
-    const botBendDeduct = Math.round(bendAdjustment(bot.diameter, 90));
-    const botAnchorDesc = botAnchor.canStraight
-      ? `直锚${botAnchor.straightLen}mm` : `弯锚(直段${botAnchor.bentStraightPart}+弯折${botAnchor.bentBendPart}-弯调${botBendDeduct}mm)`;
-    const botFormula: FormulaStep[] = [
-      ...beamEndAnchorSteps(bot.grade, bot.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '单根长度', formula: 'L = 净跨总长 + 2×锚固', substitution: `= ${totalNet} + 2×${botAnchorLen}`, result: `= ${(totalNet + 2 * botAnchorLen)} mm = ${botL.toFixed(2)} m` },
-    ];
-    const botRowDesc = bot.perRow && bot.perRow.length >= 2 ? `，${bot.perRow.length}排(${[...bot.perRow].reverse().join('/')})` : (bot.rows && bot.rows >= 2 ? `，${bot.rows}排` : '');
-    push('下部通长筋', p.bottom, `${botL.toFixed(2)}m × ${bot.count}${botRowDesc} (${botAnchorDesc}×2)`,
-      bot.grade, bot.diameter, bot.count, botL, '#C0392B', botFormula);
-  }
-
-  // 支座负筋 (伸入跨内 ln/3 + 锚固)
-  // 每跨按各自跨长计算，汇总为一条记录
-  if (leftR) {
-    const leftAnchor = calcBeamEndAnchor(leftR.grade, leftR.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const anchorLen = leftAnchor.canStraight ? leftAnchor.straightLen : bentAnchorCutLen(leftAnchor.bentStraightPart, leftAnchor.bentBendPart, leftR.diameter);
-    const supportLen0 = calcSupportRebarLength(spanLengthsArr[0]);
-    const leftLen = (supportLen0 + anchorLen) / 1000;
-    const leftSupportFormula: FormulaStep[] = [
-      ...beamEndAnchorSteps(leftR.grade, leftR.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '跨内伸入长度(第1跨)', formula: '第一排: ln/3', substitution: `= ${spanLengthsArr[0]}/3`, result: `= ${supportLen0} mm` },
-      { label: '单根长度', formula: 'L = ln/3 + 端支座锚固', substitution: `= ${supportLen0} + ${anchorLen}`, result: `= ${leftLen.toFixed(3)} m` },
-    ];
-    push('左端支座负筋', p.leftSupport!, `${leftLen.toFixed(3)}m × ${leftR.count} (第1跨ln/3+端锚)`,
-      leftR.grade, leftR.diameter, leftR.count, leftLen, '#8E44AD', leftSupportFormula);
-  }
-  if (rightR) {
-    const rightAnchor = calcBeamEndAnchor(rightR.grade, rightR.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const anchorLen = rightAnchor.canStraight ? rightAnchor.straightLen : bentAnchorCutLen(rightAnchor.bentStraightPart, rightAnchor.bentBendPart, rightR.diameter);
-    const supportLen0R = calcSupportRebarLength(spanLengthsArr[spanCount - 1]);
-    const rightLen = (supportLen0R + anchorLen) / 1000;
-    const rightSupportFormula: FormulaStep[] = [
-      ...beamEndAnchorSteps(rightR.grade, rightR.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '跨内伸入长度(末跨)', formula: '第一排: ln/3', substitution: `= ${spanLengthsArr[spanCount - 1]}/3`, result: `= ${supportLen0R} mm` },
-      { label: '单根长度', formula: 'L = ln/3 + 端支座锚固', substitution: `= ${supportLen0R} + ${anchorLen}`, result: `= ${rightLen.toFixed(3)} m` },
-    ];
-    push('右端支座负筋', p.rightSupport!, `${rightLen.toFixed(3)}m × ${rightR.count} (末跨ln/3+端锚)`,
-      rightR.grade, rightR.diameter, rightR.count, rightLen, '#8E44AD', rightSupportFormula);
-  }
-
-  // 第二排支座负筋 (ln/4)
-  const leftR2 = p.leftSupport2 ? parseRebar(p.leftSupport2) : null;
-  const rightR2 = p.rightSupport2 ? parseRebar(p.rightSupport2) : null;
-  if (leftR2) {
-    const leftAnchor2 = calcBeamEndAnchor(leftR2.grade, leftR2.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const anchorLen2 = leftAnchor2.canStraight ? leftAnchor2.straightLen : bentAnchorCutLen(leftAnchor2.bentStraightPart, leftAnchor2.bentBendPart, leftR2.diameter);
-    const supportLen2_0 = calcSupportRebarLength(spanLengthsArr[0], 2);
-    const leftLen2 = (supportLen2_0 + anchorLen2) / 1000;
-    const leftFormula2: FormulaStep[] = [
-      ...beamEndAnchorSteps(leftR2.grade, leftR2.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '跨内伸入长度(第1跨)', formula: '第二排: ln/4', substitution: `= ${spanLengthsArr[0]}/4`, result: `= ${supportLen2_0} mm` },
-      { label: '单根长度', formula: 'L = ln/4 + 端支座锚固', substitution: `= ${supportLen2_0} + ${anchorLen2}`, result: `= ${leftLen2.toFixed(3)} m` },
-    ];
-    push('左端支座负筋(二排)', p.leftSupport2!, `${leftLen2.toFixed(3)}m × ${leftR2.count} (第1跨ln/4+端锚)`,
-      leftR2.grade, leftR2.diameter, leftR2.count, leftLen2, '#8E44AD', leftFormula2);
-  }
-  if (rightR2) {
-    const rightAnchor2 = calcBeamEndAnchor(rightR2.grade, rightR2.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const anchorLen2 = rightAnchor2.canStraight ? rightAnchor2.straightLen : bentAnchorCutLen(rightAnchor2.bentStraightPart, rightAnchor2.bentBendPart, rightR2.diameter);
-    const supportLen2_last = calcSupportRebarLength(spanLengthsArr[spanCount - 1], 2);
-    const rightLen2 = (supportLen2_last + anchorLen2) / 1000;
-    const rightFormula2: FormulaStep[] = [
-      ...beamEndAnchorSteps(rightR2.grade, rightR2.diameter, p.concreteGrade, p.seismicGrade, hc, cover),
-      { label: '跨内伸入长度(末跨)', formula: '第二排: ln/4', substitution: `= ${spanLengthsArr[spanCount - 1]}/4`, result: `= ${supportLen2_last} mm` },
-      { label: '单根长度', formula: 'L = ln/4 + 端支座锚固', substitution: `= ${supportLen2_last} + ${anchorLen2}`, result: `= ${rightLen2.toFixed(3)} m` },
-    ];
-    push('右端支座负筋(二排)', p.rightSupport2!, `${rightLen2.toFixed(3)}m × ${rightR2.count} (末跨ln/4+端锚)`,
-      rightR2.grade, rightR2.diameter, rightR2.count, rightLen2, '#8E44AD', rightFormula2);
+  // Use exactly the bend planes and centreline arc lengths rendered in 3D.
+  for (const row of beamLongitudinalLayout(p).rows) {
+    const a = row.anchor;
+    const name = BEAM_BAR_NAMES[row.role] + (row.row ? `(第${row.row+1}排)` : '');
+    const lengthM = row.lengthMm/1000;
+    const anchorDesc = a.canStraight ? `直锚 ${a.straightLen}mm` : `弯锚水平段 ${a.bentStraightPart}mm，竖段 ${a.bentBendPart}mm`;
+    push(name, `${row.count}${row.grade}${row.diameter}`, `${lengthM.toFixed(3)}m × ${row.count} (${anchorDesc})`,
+      row.grade,row.diameter,row.count,lengthM,row.role==='top'||row.role==='bottom'?'#C0392B':'#8E44AD',[
+        {label:'端部锚固布置',formula:'按各排错开的弯折平面计量',substitution:anchorDesc,result:`${row.endCount} 个端部`},
+        {label:'单根中心线长度',formula:'L = 主体长度 + 端部数量 × (水平段 + 竖段 − 圆弧转角差)',
+          substitution:`主体 ${row.bodyLengthMm}mm；${anchorDesc}`,result:`${row.lengthMm.toFixed(1)} mm`},
+      ]);
   }
 
   // 中间支座负筋 (内跨支座，贯通中间柱，仅多跨时有效)
@@ -363,11 +259,11 @@ export function calcBeam(p: BeamParams): CalcResult {
       erTotalLen += Math.max(erLenI, 0) * erCount;
     }
     const erTotal = erCount * spanCount;
-    const avgErLen = erTotalLen > 0 ? erTotalLen / erTotal : 0;
+    const avgErLen = erTotalLen > 0 && erTotal > 0 ? erTotalLen / erTotal / 1000 : 0; // mm → m
     if (avgErLen > 0.05) {
       const erSpec = p.erectionBar || `${erCount}Φ${erDia}`;
       const erFormula: FormulaStep[] = [
-        { label: '架立筋平均长度', formula: 'L = Σ(ln_i - 支座伸入 + 搭接) / 跨数', substitution: `合计${erTotalLen.toFixed(0)}mm / ${erTotal}根`, result: `= ${avgErLen.toFixed(2)} m/根` },
+        { label: '架立筋平均长度', formula: 'L(m) = 总长(mm) / 总根数 / 1000', substitution: `= ${erTotalLen.toFixed(0)} / ${erTotal} / 1000`, result: `= ${avgErLen.toFixed(3)} m/根` },
       ];
       push('架立筋', erSpec, `平均${avgErLen.toFixed(2)}m × ${erTotal}${spanCount > 1 ? ` (${erCount}根×${spanCount}跨)` : ''} (搭接${lap}mm)`,
         erGrade, erDia, erTotal, avgErLen, '#F39C12', erFormula);
@@ -389,7 +285,7 @@ export function calcBeam(p: BeamParams): CalcResult {
   const haunchDenseZoneMm = haunchSides > 0
     ? Math.max(haunchHbCoeff * p.h, 500, haunchLenMm + 0.5 * haunchH0Mm)
     : 0;
-  const haunchBaseSkipMm = haunchType === 'horizontal' ? haunchDenseZoneMm : haunchLenMm;
+  const haunchBaseSkipMm = haunchType === 'vertical' ? haunchDenseZoneMm : haunchLenMm;
   const countBaseStirrupsForSpan = (spanLenMm: number) => {
     const leftSkip = hasLeftHaunchCalc ? haunchBaseSkipMm : 0;
     const rightSkip = hasRightHaunchCalc ? haunchBaseSkipMm : 0;
@@ -403,43 +299,45 @@ export function calcBeam(p: BeamParams): CalcResult {
   let stirWt = 0;
   const stirCenterB0 = Math.max(spanWidthsArr[0] - 2 * cover - stir.diameter, 0);
   const stirCenterH = Math.max(p.h - 2 * cover - stir.diameter, 0);
-  const stirSpec0 = createStirrupShapeSpec({
+  const stirSpec0 = createCompositeStirrupSpec({
     widthMm: stirCenterB0,
+    barPositionsMm: beamStirrupBarPositions(stirCenterB0, stir.diameter, p.top, p.bottom),
     heightMm: stirCenterH,
-    diameterMm: stir.diameter,
+    diameterMm: stir.diameter, legs: stir.legs,
   });
-  const stirSingleL0 = stirSpec0.lengthMm / 1000;
+  const stirSingleL0 = stirSpec0.lengthMm / stirSpec0.pieceCount / 1000;
   const stirPerSpanInfo: string[] = [];
   for (let i = 0; i < spanCount; i++) {
     const bi = spanWidthsArr[i];
     const sli = spanLengthsArr[i];
-    const stirSpecI = createStirrupShapeSpec({
+    const stirSpecI = createCompositeStirrupSpec({
       widthMm: Math.max(bi - 2 * cover - stir.diameter, 0),
+      barPositionsMm: beamStirrupBarPositions(Math.max(bi - 2 * cover - stir.diameter, 0), stir.diameter, p.top, p.bottom),
       heightMm: stirCenterH,
-      diameterMm: stir.diameter,
+      diameterMm: stir.diameter, legs: stir.legs,
     });
-    const stirSingleLi = stirSpecI.lengthMm / 1000;
+    const stirSingleLi = stirSpecI.lengthMm / stirSpecI.pieceCount / 1000;
     const { denseCount: denseCountI, normalCount: normalCountI } = countBaseStirrupsForSpan(sli);
     const spanCountI = denseCountI + normalCountI;
-    stirCount += spanCountI;
-    stirWt += spanCountI * stirSingleLi * w(stir.diameter);
-    stirPerSpanInfo.push(`第${i + 1}跨b=${bi}:${spanCountI}根`);
+    stirCount += spanCountI * stirSpecI.pieceCount;
+    stirWt += spanCountI * stirSpecI.pieceCount * stirSingleLi * w(stir.diameter);
+    stirPerSpanInfo.push(`第${i + 1}跨b=${bi}:${spanCountI}道 × ${stirSpecI.pieceCount}箍/道`);
   }
   const stirSingleL = spanCount === 1 ? stirSingleL0 : stirWt / (stirCount * w(stir.diameter));
   const { denseCount: denseCountPerSpan0, normalCount: normalCountPerSpan0 } = countBaseStirrupsForSpan(spanLengthsArr[0]);
   const stirFormula: FormulaStep[] = [
     { label: '箍筋中心线尺寸(第1跨)', formula: 'b_c = b - 2c - d, h_c = h - 2c - d', substitution: `= ${spanWidthsArr[0]} - 2×${cover} - ${stir.diameter}, ${p.h} - 2×${cover} - ${stir.diameter}`, result: `= ${stirCenterB0}×${stirCenterH} mm` },
-    { label: '135°弯钩长度', formula: 'hook = max(10d, 75)', substitution: `= max(10×${stir.diameter}, 75)`, result: `= ${Math.round(stirSpec0.hookLenMm)} mm` },
-    { label: '单根下料长度', formula: 'L = 2(b_c+h_c)-8r+2πr + 2×(135°圆弧+hook)', substitution: `中心线${stirCenterB0}×${stirCenterH}，r=${Math.round(stirSpec0.cornerRadiusMm)}，R=${Math.round(stirSpec0.bendRadiusMm)}，hook=${Math.round(stirSpec0.hookLenMm)}`, result: `= ${stirSpec0.lengthMm} mm = ${stirSingleL0.toFixed(3)} m` },
+    { label: '弯后平直段（每端）', formula: 'hook = max(10d, 75)', substitution: `= max(10×${stir.diameter}, 75)`, result: `= ${Math.round(stirSpec0.hookLenMm)} mm` },
+    { label: '每道复合箍总长度', formula: 'L道 = Σ各独立箍下料长度', substitution: stirSpec0.hoops.map(h => `${h.lengthMm}`).join(' + '), result: `= ${stirSpec0.lengthMm} mm（${stirSpec0.pieceCount}个独立箍/道）` },
     { label: '加密区长度', formula: 'l_dense = max(2h, 500)', substitution: `= max(2×${p.h}, 500)`, result: `= ${denseZoneLen} mm` },
-    { label: '加密区根数/跨(第1跨)', formula: haunchSides > 0 ? 'n_dense = 梁端加密区扣除加腋专用箍筋区后计数' : 'n_dense = ⌈2×l_dense / s_dense⌉', substitution: haunchSides > 0 ? `加腋区由专用箍筋另计，基础箍筋剩余加密根数` : `= ⌈2×${denseZoneLen} / ${stir.spacingDense}⌉`, result: `= ${denseCountPerSpan0}` },
-    { label: '非加密区根数/跨(第1跨)', formula: haunchSides > 0 ? 'n_normal = 扣除max(l_dense, l_haunch)后的中段/s_normal' : 'n_normal = ⌈(ln - 2×l_dense) / s_normal⌉', substitution: haunchSides > 0 ? `ln=${spanLengthsArr[0]}，加腋替代区=${Math.round(haunchBaseSkipMm)}mm` : `= ⌈(${spanLengthsArr[0]} - 2×${denseZoneLen}) / ${stir.spacingNormal}⌉`, result: `= ${normalCountPerSpan0}` },
-    { label: '箍筋总数(各跨合计)', formula: spanCount > 1 ? stirPerSpanInfo.join('，') : `(${denseCountPerSpan0}+${normalCountPerSpan0})×${spanCount}`, substitution: '', result: `= ${stirCount} 根` },
+    { label: '加密区道数/跨(第1跨)', formula: haunchSides > 0 ? 'n_dense = 梁端加密区扣除加腋专用箍筋区后计数' : 'n_dense = ⌈2×l_dense / s_dense⌉', substitution: haunchSides > 0 ? `加腋区由专用箍筋另计，基础箍筋剩余加密根数` : `= ⌈2×${denseZoneLen} / ${stir.spacingDense}⌉`, result: `= ${denseCountPerSpan0}` },
+    { label: '非加密区道数/跨(第1跨)', formula: haunchSides > 0 ? 'n_normal = 扣除max(l_dense, l_haunch)后的中段/s_normal' : 'n_normal = ⌈(ln - 2×l_dense) / s_normal⌉', substitution: haunchSides > 0 ? `ln=${spanLengthsArr[0]}，加腋替代区=${Math.round(haunchBaseSkipMm)}mm` : `= ⌈(${spanLengthsArr[0]} - 2×${denseZoneLen}) / ${stir.spacingNormal}⌉`, result: `= ${normalCountPerSpan0}` },
+    { label: '独立箍总根数', formula: '根数 = 道数 × 每道独立箍数', substitution: stirPerSpanInfo.join('，'), result: `= ${stirCount} 根` },
     weightSteps('箍筋', stirCount, stirSingleL, stir.diameter),
   ];
   items.push({
     name: '箍筋', spec: p.stirrup,
-    length: `${stirSingleL.toFixed(3)}m × ${stirCount}根`,
+    length: `平均${stirSingleL.toFixed(3)}m × ${stirCount}根`,
     weight: `${stirWt.toFixed(2)} kg`, color: '#27AE60',
     grade: stir.grade, diameter: stir.diameter, count: stirCount, lengthM: stirSingleL, weightKg: stirWt,
     formulaSteps: stirFormula,
@@ -449,7 +347,7 @@ export function calcBeam(p: BeamParams): CalcResult {
   // 加腋附加筋与加腋区箍筋 (22G101-1 2-36，按当前3D表达口径计入)
   if (haunchSides > 0) {
     const haunchSideTotal = haunchSides * spanCount;
-    if (haunchType === 'horizontal') {
+    if (haunchType === 'vertical') {
       const haunchLaE = calcLaE(bot.grade, bot.diameter, p.concreteGrade, p.seismicGrade);
       const anchorInCol = Math.min(haunchLaE, hc - cover);
       const slopeBaseLen = Math.sqrt(haunchLenMm * haunchLenMm + haunchHeightMm * haunchHeightMm);
@@ -475,7 +373,7 @@ export function calcBeam(p: BeamParams): CalcResult {
           { label: '斜面段(第1跨)', formula: 'L_slope = sqrt(c1²+h²) × 延伸系数', substitution: `= sqrt(${haunchLenMm}²+${haunchHeightMm}²) × ${(firstSlopeLen / slopeBaseLen).toFixed(2)}`, result: `= ${Math.round(firstSlopeLen)} mm` },
         ];
         push('加腋附加筋', `${firstRowCount}${bot.grade}${bot.diameter}`,
-          `平均${avgHaunchBarLen.toFixed(3)}m × ${haunchBarCount} (水平加腋，含柱内锚固)`,
+          `平均${avgHaunchBarLen.toFixed(3)}m × ${haunchBarCount} (竖向加腋，含柱内锚固)`,
           bot.grade, bot.diameter, haunchBarCount, avgHaunchBarLen, '#E67E22', haunchBarFormula);
       }
 
@@ -493,13 +391,14 @@ export function calcBeam(p: BeamParams): CalcResult {
             const t = (j + 0.5) / countPerSide;
             const distFromCol = stirZoneLen * t;
             const localDepth = distFromCol <= haunchLenMm ? haunchHeightMm * (1 - distFromCol / haunchLenMm) : 0;
-            const spec = createStirrupShapeSpec({
+            const spec = createCompositeStirrupSpec({
               widthMm: Math.max(spanWidthsArr[i] - 2 * cover - stir.diameter, 0),
+              barPositionsMm: beamStirrupBarPositions(Math.max(spanWidthsArr[i] - 2 * cover - stir.diameter, 0), stir.diameter, p.top, p.bottom),
               heightMm: Math.max(p.h + localDepth - 2 * cover - stir.diameter, 0),
-              diameterMm: stir.diameter,
+              diameterMm: stir.diameter, legs: stir.legs,
             });
             if (firstHaunchStirLen === 0) firstHaunchStirLen = spec.lengthMm;
-            haunchStirCount += 1;
+            haunchStirCount += spec.pieceCount;
             haunchStirWtLen += spec.lengthMm / 1000;
           }
         }
@@ -508,16 +407,16 @@ export function calcBeam(p: BeamParams): CalcResult {
         const avgHaunchStirLen = haunchStirWtLen / haunchStirCount;
         const haunchStirFormula: FormulaStep[] = [
           { label: '加腋加密区长度', formula: 'l_h = max(αhb, 500, c1+0.5h0)', substitution: `= max(${hbCoeff}×${p.h}, 500, ${haunchLenMm}+0.5×${Math.round(h0mm)})`, result: `= ${Math.round(denseZone1mm)} mm` },
-          { label: '箍筋根数', formula: 'n = Σceil(min(l_h, ln_i/2-50)/s_dense) × 加腋侧数', substitution: `s=${stir.spacingDense}，侧数/跨=${haunchSides}`, result: `= ${haunchStirCount} 根` },
-          { label: '单根长度(首道)', formula: '按加腋处变高度中心线箍筋', substitution: `中心线随局部加腋高度变化`, result: `首道约 ${firstHaunchStirLen} mm` },
+          { label: '箍筋根数', formula: 'n = Σceil(min(l_h, ln_i/2-50)/s_dense) × 加腋侧数 × 每道独立箍数', substitution: `s=${stir.spacingDense}，侧数/跨=${haunchSides}`, result: `= ${haunchStirCount} 根` },
+          { label: '首道总长度', formula: '按加腋处变高度中心线箍筋', substitution: `中心线随局部加腋高度变化`, result: `首道约 ${firstHaunchStirLen} mm` },
         ];
         push('加腋区箍筋', p.stirrup,
-          `平均${avgHaunchStirLen.toFixed(3)}m × ${haunchStirCount} (水平加腋区)`,
+          `平均${avgHaunchStirLen.toFixed(3)}m × ${haunchStirCount} (竖向加腋区)`,
           stir.grade, stir.diameter, haunchStirCount, avgHaunchStirLen, '#27AE60', haunchStirFormula);
       }
     }
 
-    if (haunchType === 'vertical') {
+    if (haunchType === 'horizontal') {
       const slopeLen = Math.sqrt(haunchLenMm * haunchLenMm + haunchHeightMm * haunchHeightMm);
       const bottomLaE = calcLaE(bot.grade, bot.diameter, p.concreteGrade, p.seismicGrade);
       const bottomAnchorInCol = Math.min(bottomLaE, hc - cover);
@@ -527,12 +426,12 @@ export function calcBeam(p: BeamParams): CalcResult {
       const verticalCount = haunchSideTotal * barsPerSide;
       const bottomHaunchLen = (bottomAnchorInCol + slopeLen) / 1000;
       const topHaunchLen = (topAnchorInCol + slopeLen) / 1000;
-      push('竖向加腋下部附加筋', `${barsPerSide}${bot.grade}${bot.diameter}`,
+      push('水平加腋下部附加筋', `${barsPerSide}${bot.grade}${bot.diameter}`,
         `${bottomHaunchLen.toFixed(3)}m × ${verticalCount} (两侧斜面+柱内锚固)`,
         bot.grade, bot.diameter, verticalCount, bottomHaunchLen, '#E67E22', [
           { label: '单根长度', formula: 'L = 柱内锚固 + sqrt(c1²+b_h²)', substitution: `= ${bottomAnchorInCol} + sqrt(${haunchLenMm}²+${haunchHeightMm}²)`, result: `= ${(bottomHaunchLen * 1000).toFixed(0)} mm` },
         ]);
-      push('竖向加腋上部附加筋', `${barsPerSide}${top.grade}${top.diameter}`,
+      push('水平加腋上部附加筋', `${barsPerSide}${top.grade}${top.diameter}`,
         `${topHaunchLen.toFixed(3)}m × ${verticalCount} (两侧斜面+柱内锚固)`,
         top.grade, top.diameter, verticalCount, topHaunchLen, '#E67E22', [
           { label: '单根长度', formula: 'L = 柱内锚固 + sqrt(c1²+b_h²)', substitution: `= ${topAnchorInCol} + sqrt(${haunchLenMm}²+${haunchHeightMm}²)`, result: `= ${(topHaunchLen * 1000).toFixed(0)} mm` },
@@ -546,22 +445,23 @@ export function calcBeam(p: BeamParams): CalcResult {
           for (let j = 0; j < countPerSide; j++) {
             const t = (j + 0.5) / countPerSide;
             const localWidthAdd = haunchHeightMm * (1 - t);
-            const spec = createStirrupShapeSpec({
+            const spec = createCompositeStirrupSpec({
               widthMm: Math.max(spanWidthsArr[i] + 2 * localWidthAdd - 2 * cover - stir.diameter, 0),
+              barPositionsMm: beamStirrupBarPositions(Math.max(spanWidthsArr[i] + 2 * localWidthAdd - 2 * cover - stir.diameter, 0), stir.diameter, p.top, p.bottom),
               heightMm: stirCenterH,
-              diameterMm: stir.diameter,
+              diameterMm: stir.diameter, legs: stir.legs,
             });
-            verticalStirCount += 1;
+            verticalStirCount += spec.pieceCount;
             verticalStirWtLen += spec.lengthMm / 1000;
           }
         }
       }
       if (verticalStirCount > 0) {
         const avgVerticalStirLen = verticalStirWtLen / verticalStirCount;
-        push('竖向加腋区箍筋', p.stirrup,
-          `平均${avgVerticalStirLen.toFixed(3)}m × ${verticalStirCount} (竖向加腋区)`,
+        push('水平加腋区箍筋', p.stirrup,
+          `平均${avgVerticalStirLen.toFixed(3)}m × ${verticalStirCount} (水平加腋区)`,
           stir.grade, stir.diameter, verticalStirCount, avgVerticalStirLen, '#27AE60', [
-            { label: '箍筋根数', formula: 'n = ceil(c1/s_dense) × 加腋侧数 × 跨数', substitution: `= ceil(${haunchLenMm}/${stir.spacingDense}) × ${haunchSides} × ${spanCount}`, result: `= ${verticalStirCount} 根` },
+            { label: '箍筋根数', formula: 'n = ceil(c1/s_dense) × 加腋侧数 × 跨数 × 每道独立箍数', substitution: `= ceil(${haunchLenMm}/${stir.spacingDense}) × ${haunchSides} × ${spanCount}`, result: `= ${verticalStirCount} 根` },
           ]);
       }
     }
@@ -629,9 +529,9 @@ export function calcBeam(p: BeamParams): CalcResult {
         });
         const firstTieRows = countBeamTiePositions(spanLengthsArr[0], stir.spacingNormal);
         const tieFormula: FormulaStep[] = [
-          { label: '拉筋主体(第1跨)', formula: 'body = 2×(sideOffset - R)', substitution: `sideOffset = (${spanWidthsArr[0]} - 2×${cover} - ${stir.diameter})/2 - ${stir.diameter}/2 - ${sideInfo.diameter}/2`, result: `= ${Math.round(firstTieSpec.bodyLenMm)} mm` },
-          { label: '135°弯钩长度', formula: 'hook = max(10d, R×1.5)', substitution: `R=max(侧筋d/2+拉筋d, 3d)`, result: `= ${Math.round(firstTieSpec.hookLenMm)} mm` },
-          { label: '单根下料长度', formula: 'L = body + 2×(135°圆弧 + hook)', substitution: `= ${Math.round(firstTieSpec.bodyLenMm)} + 2×(${Math.round(firstTieSpec.bendRadiusMm)}×135°弧度 + ${Math.round(firstTieSpec.hookLenMm)})`, result: `= ${firstTieSpec.lengthMm} mm = ${(firstTieSpec.lengthMm / 1000).toFixed(3)} m` },
+          { label: '拉筋主体(第1跨)', formula: 'body = 2×弯弧圆心距梁中线', substitution: `sideOffset = (${spanWidthsArr[0]} - 2×${cover} - ${stir.diameter})/2 - ${stir.diameter}/2 - ${sideInfo.diameter}/2`, result: `= ${Math.round(firstTieSpec.bodyLenMm)} mm` },
+          { label: '弯后平直段（每端）', formula: 'hook = max(10d, 75mm)', substitution: `max(10×${tieInfo.diameter}, 75)`, result: `= ${Math.round(firstTieSpec.hookLenMm)} mm` },
+          { label: '单根下料长度', formula: 'L = body + 2×(R×3π/4 + l直)', substitution: `= ${Math.round(firstTieSpec.bodyLenMm)} + 2×(${firstTieSpec.bendRadiusMm.toFixed(1)}×3π/4 + ${Math.round(firstTieSpec.hookLenMm)})`, result: `= ${firstTieSpec.lengthMm} mm = ${(firstTieSpec.lengthMm / 1000).toFixed(3)} m` },
           { label: '拉筋道数(第1跨)', formula: 'n_x = 按3D布置: 从1.5s到ln-0.5s，每s一道', substitution: `ln=${spanLengthsArr[0]}，s=${stir.spacingNormal}`, result: `= ${firstTieRows} 道` },
           { label: '拉筋总数', formula: 'n = Σ(道数×层数)', substitution: `层数=ceil(${sideInfo.count}/2)=${perSide}，各跨合计`, result: `= ${tieTotalCount} 根` },
         ];
@@ -754,8 +654,6 @@ export interface BarShape {
 
 export function calcBarShapes(p: BeamParams): BarShape[] {
   const shapes: BarShape[] = [];
-  const top = parseRebar(p.top);
-  const bot = parseRebarBottom(p.bottom);
   const stir = parseStirrup(p.stirrup);
   const cover = p.cover || 25;
   const hc = p.hc || 500;
@@ -763,56 +661,18 @@ export function calcBarShapes(p: BeamParams): BarShape[] {
   const spanLengthsArr: number[] = (p.spanLengths && p.spanLengths.length === spanCount)
     ? p.spanLengths
     : Array(spanCount).fill(p.spanLength || 4000);
-  const totalNet = spanLengthsArr.reduce((s, l) => s + l, 0) + (spanCount - 1) * hc;
 
-  // 上部通长筋
-  const topA = calcBeamEndAnchor(top.grade, top.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-  if (topA.canStraight) {
-    shapes.push({ name: '上部通长筋', spec: p.top, shapeType: 'straight', count: top.count,
-      color: '#C0392B', totalLen: totalNet + 2 * topA.straightLen, setId: 'beam.top',
-      bodyLen: totalNet, anchorLen: topA.straightLen });
-  } else {
-    shapes.push({ name: '上部通长筋', spec: p.top, shapeType: 'bentAnchor', count: top.count,
-      color: '#C0392B', totalLen: totalNet + 2 * bentAnchorCutLen(topA.bentStraightPart, topA.bentBendPart, top.diameter), setId: 'beam.top',
-      bodyLen: totalNet, anchorLen: topA.bentStraightPart, bendLen: topA.bentBendPart, bendDir: 'down' });
-  }
-
-  // 下部通长筋
-  const botA = calcBeamEndAnchor(bot.grade, bot.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-  if (botA.canStraight) {
-    shapes.push({ name: '下部通长筋', spec: p.bottom, shapeType: 'straight', count: bot.count,
-      color: '#C0392B', totalLen: totalNet + 2 * botA.straightLen, setId: 'beam.bottom',
-      bodyLen: totalNet, anchorLen: botA.straightLen });
-  } else {
-    shapes.push({ name: '下部通长筋', spec: p.bottom, shapeType: 'bentAnchor', count: bot.count,
-      color: '#C0392B', totalLen: totalNet + 2 * bentAnchorCutLen(botA.bentStraightPart, botA.bentBendPart, bot.diameter), setId: 'beam.bottom',
-      bodyLen: totalNet, anchorLen: botA.bentStraightPart, bendLen: botA.bentBendPart, bendDir: 'up' });
-  }
-
-  // 支座负筋
-  const supportShapes = [
-    { key: 'leftSupport' as const, row: 1 as 1 | 2, field: p.leftSupport },
-    { key: 'rightSupport' as const, row: 1 as 1 | 2, field: p.rightSupport },
-    { key: 'leftSupport2' as const, row: 2 as 1 | 2, field: p.leftSupport2 },
-    { key: 'rightSupport2' as const, row: 2 as 1 | 2, field: p.rightSupport2 },
-  ];
-  for (const { key, row, field } of supportShapes) {
-    if (!field) continue;
-    const r = parseRebar(field);
-    const isRight = key.startsWith('right');
-    const supportSpanLen = isRight ? spanLengthsArr[spanCount - 1] : spanLengthsArr[0];
-    const sLen = calcSupportRebarLength(supportSpanLen, row);
-    const a = calcBeamEndAnchor(r.grade, r.diameter, p.concreteGrade, p.seismicGrade, hc, cover);
-    const ancLen = a.canStraight ? a.straightLen : a.bentStraightPart;
-    const bLen = a.canStraight ? 0 : a.bentBendPart;
-    const bendDeduct = a.canStraight ? 0 : bendAdjustment(r.diameter, 90);
-    const side = isRight ? '右端' : '左端';
-    const rowLabel = row === 2 ? '(二排)' : '';
-    shapes.push({ name: `${side}支座负筋${rowLabel}`, spec: field,
-      shapeType: 'support', count: r.count,
-      color: '#8E44AD', totalLen: sLen + ancLen + bLen - bendDeduct, setId: `beam.${key}`,
-      bodyLen: sLen, anchorLen: ancLen, bendLen: bLen || undefined, spanLen: sLen, supportRow: row,
-      bendDir: 'down' });
+  for (const row of beamLongitudinalLayout(p).rows) {
+    const a = row.anchor, through = row.role==='top'||row.role==='bottom';
+    shapes.push({name:BEAM_BAR_NAMES[row.role]+(row.row?`(第${row.row+1}排)` : ''),
+      spec:`${row.count}${row.grade}${row.diameter}`, count:row.count,
+      color:through?'#C0392B':'#8E44AD', setId:`beam.${row.role}.row${row.row}`,
+      shapeType:through?(a.canStraight?'straight':'bentAnchor'):'support',
+      totalLen:row.lengthMm, bodyLen:row.bodyLengthMm,
+      anchorLen:a.canStraight?a.straightLen:a.bentStraightPart,
+      bendLen:a.canStraight?undefined:a.bentBendPart,
+      bendDir:row.role==='bottom'?'up':'down',
+      ...(!through?{spanLen:row.bodyLengthMm,supportRow:(row.role.endsWith('2')?2:1) as 1|2}:{})});
   }
 
   const innerR = spanCount > 1 ? (p.innerSupport ? parseRebar(p.innerSupport) : ((p.rightSupport ? parseRebar(p.rightSupport) : null) ?? (p.leftSupport ? parseRebar(p.leftSupport) : null))) : null;
@@ -835,15 +695,18 @@ export function calcBarShapes(p: BeamParams): BarShape[] {
   }
 
   // 箍筋
-  const stirSpec = createStirrupShapeSpec({
+  const stirSpec = createCompositeStirrupSpec({
     widthMm: p.b - 2 * cover - stir.diameter,
+    barPositionsMm: beamStirrupBarPositions(p.b - 2 * cover - stir.diameter, stir.diameter, p.top, p.bottom),
     heightMm: p.h - 2 * cover - stir.diameter,
-    diameterMm: stir.diameter,
+    diameterMm: stir.diameter, legs: stir.legs,
   });
-  shapes.push({ name: '箍筋', spec: p.stirrup, shapeType: 'stirrup',
-    count: 0, color: '#27AE60', totalLen: stirSpec.lengthMm, setId: 'beam.stirrup',
-    width: stirSpec.widthMm, height: stirSpec.heightMm, hookLen: stirSpec.hookLenMm,
-    bendRadius: stirSpec.bendRadiusMm, hookAngleDeg: stirSpec.hookAngleDeg });
+  stirSpec.hoops.forEach((hoop, index) => shapes.push({
+    name: stirSpec.pieceCount === 1 ? '箍筋' : `${index === 0 ? '外箍' : `内箍${index}`}（每道1个）`,
+    spec: p.stirrup, shapeType: 'stirrup', count: 0, color: '#27AE60',
+    totalLen: hoop.lengthMm, setId: 'beam.stirrup', width: hoop.widthMm, height: hoop.heightMm,
+    hookLen: hoop.hookLenMm, bendRadius: hoop.bendRadiusMm, hookAngleDeg: hoop.hookAngleDeg,
+  }));
 
   // 拉筋
   const sideInfo = p.sideBar ? parseSideBar(p.sideBar) : null;
@@ -872,10 +735,8 @@ export function calcBarShapes(p: BeamParams): BarShape[] {
 
 export function calcColumnBarShapes(p: ColumnParams): BarShape[] {
   const shapes: BarShape[] = [];
-  const stir = parseStirrup(p.stirrup);
-  const cover = p.cover || 25;
   const colHeight = p.height || 3000;
-  const resolved = resolveColumnBars(p.main, p.cornerMain, p.bMiddleMain, p.hMiddleMain, p.b - 2 * cover, p.h - 2 * cover);
+  const resolved = columnSectionBars(p);
 
   const addMainShape = (name: string, spec: string, count: number, grade: string, diameter: number, color: string, setId: string) => {
     const lapLen = calcLlE(grade, diameter, p.concreteGrade, p.seismicGrade);
@@ -905,26 +766,16 @@ export function calcColumnBarShapes(p: ColumnParams): BarShape[] {
     addMainShape('纵向钢筋', p.main, resolved.totalCount, resolved.corner.grade, resolved.corner.diameter, '#C0392B', 'column.main');
   }
 
-  const stirSpec = createStirrupShapeSpec({
-    widthMm: Math.max(p.b - 2 * cover - stir.diameter, 0),
-    heightMm: Math.max(p.h - 2 * cover - stir.diameter, 0),
-    diameterMm: stir.diameter,
-  });
-  shapes.push({
-    name: '箍筋',
-    spec: p.stirrup,
-    shapeType: 'stirrup',
-    count: 0,
-    color: '#27AE60',
-    totalLen: stirSpec.lengthMm,
-    width: stirSpec.widthMm,
-    height: stirSpec.heightMm,
-    hookLen: stirSpec.hookLenMm,
-    bendRadius: stirSpec.bendRadiusMm,
-    hookAngleDeg: stirSpec.hookAngleDeg,
-    setId: 'column.stirrup',
-    relatedSetIds: ['column.corner', 'column.bMiddle', 'column.hMiddle', 'column.main'],
-  });
+  const hoops=columnHoopLayout(p);
+  for(const [upper,spec] of [[false,hoops.lower],[true,hoops.upper]] as const){
+    const stations=hoops.positions.filter(q=>q.upper===upper).length;
+    if(!stations)continue;
+    spec.hoops.forEach((hoop,index)=>shapes.push({
+      name:(p.hasVariableSection?(upper?'上段':'下段'):'')+(index?'内箍'+index:'外箍'),spec:p.stirrup,shapeType:'stirrup',count:stations,color:'#27AE60',
+      totalLen:hoop.lengthMm,setId:'column.stirrup',width:hoop.widthMm,height:hoop.heightMm,hookLen:hoop.hookLenMm,bendRadius:hoop.bendRadiusMm,hookAngleDeg:hoop.hookAngleDeg,
+      relatedSetIds:['column.corner','column.bMiddle','column.hMiddle','column.main'],
+    }));
+  }
 
   return shapes;
 }
@@ -937,11 +788,12 @@ export function calcColumn(p: ColumnParams): CalcResult {
   let total = 0;
 
   // 22G101-1 分项标注解析
-  const resolved = resolveColumnBars(p.main, p.cornerMain, p.bMiddleMain, p.hMiddleMain, p.b - 2 * cover, p.h - 2 * cover);
+  const resolved = columnSectionBars(p);
+  const hoopLayout=columnHoopLayout(p);
 
   // 箍筋加密区长度 GB50011 §6.3.3: max(Hn/6, hc, 500)，上下两端各取
   const hcVal = Math.max(p.b, p.h);
-  const denseZoneLen = Math.max(Math.ceil(colHeight / 6), hcVal, 500);
+  const denseZoneLen = hoopLayout.denseLength;
 
   if (resolved.isDetailed) {
     // ── 角筋 (4根) ──
@@ -1010,29 +862,31 @@ export function calcColumn(p: ColumnParams): CalcResult {
   // ── 箍筋 (中心线形状语义与3D/BBS一致) ──
   const stirCenterB = Math.max(p.b - 2 * cover - stir.diameter, 0);
   const stirCenterHCol = Math.max(p.h - 2 * cover - stir.diameter, 0);
-  const colStirSpec = createStirrupShapeSpec({
+  const colStirSpec = createCompositeStirrupSpec({
     widthMm: stirCenterB,
     heightMm: stirCenterHCol,
-    diameterMm: stir.diameter,
+    diameterMm: stir.diameter, legs: stir.legs,
+    barPositionsMm: resolved.bars.map(bar => bar.x),
   });
-  const stirSingleL = colStirSpec.lengthMm / 1000;
-  const denseCount = Math.ceil((2 * denseZoneLen) / stir.spacingDense);
-  const normalCount = Math.ceil(Math.max(colHeight - 2 * denseZoneLen, 0) / stir.spacingNormal);
-  const stirCount = denseCount + normalCount;
-  const stirW = stirCount * stirSingleL * w(stir.diameter);
+  const denseCount=hoopLayout.positions.filter(q=>q.zone==='dense').length;
+  const normalCount=hoopLayout.positions.length-denseCount;
+  const stirCount=hoopLayout.positions.reduce((sum,q)=>sum+(q.upper?hoopLayout.upper:hoopLayout.lower).pieceCount,0);
+  const totalLengthMm=hoopLayout.positions.reduce((sum,q)=>sum+(q.upper?hoopLayout.upper:hoopLayout.lower).lengthMm,0);
+  const stirSingleL=stirCount?totalLengthMm/stirCount/1000:0;
+  const stirW=totalLengthMm/1000*w(stir.diameter);
   const colStirFormula: FormulaStep[] = [
     { label: '箍筋中心线尺寸', formula: 'b_c = b - 2c - d, h_c = h - 2c - d', substitution: `= ${p.b} - 2×${cover} - ${stir.diameter}, ${p.h} - 2×${cover} - ${stir.diameter}`, result: `= ${stirCenterB}×${stirCenterHCol} mm` },
-    { label: '135°弯钩长度', formula: 'hook = max(10d, 75)', substitution: `= max(10×${stir.diameter}, 75)`, result: `= ${Math.round(colStirSpec.hookLenMm)} mm` },
-    { label: '单根下料长度', formula: 'L = 2(b_c+h_c)-8r+2πr + 2×(135°圆弧+hook)', substitution: `中心线${stirCenterB}×${stirCenterHCol}，r=${Math.round(colStirSpec.cornerRadiusMm)}，R=${Math.round(colStirSpec.bendRadiusMm)}，hook=${Math.round(colStirSpec.hookLenMm)}`, result: `= ${colStirSpec.lengthMm} mm = ${stirSingleL.toFixed(3)} m` },
-    { label: '加密区长度', formula: 'l_d = max(Hn/6, hc, 500)', substitution: `= max(⌈${colHeight}/6⌉=${Math.ceil(colHeight / 6)}, ${hcVal}, 500)`, result: `= ${denseZoneLen} mm` },
-    { label: '加密区根数(上下两端)', formula: 'n_d = ⌈2×l_d / s_d⌉', substitution: `= ⌈2×${denseZoneLen} / ${stir.spacingDense}⌉`, result: `= ${denseCount}` },
-    { label: '非加密区根数', formula: 'n_n = ⌈(H - 2×l_d) / s_n⌉', substitution: `= ⌈(${colHeight} - 2×${denseZoneLen}) / ${stir.spacingNormal}⌉`, result: `= ${normalCount}` },
-    { label: '箍筋总数', formula: 'n = n_d + n_n', substitution: `= ${denseCount} + ${normalCount}`, result: `= ${stirCount} 根` },
+    { label: '弯后平直段（每端）', formula: 'hook = max(10d, 75)', substitution: `= max(10×${stir.diameter}, 75)`, result: `= ${Math.round(colStirSpec.hookLenMm)} mm` },
+    { label: '每道复合箍总长度', formula: 'L道 = Σ各独立箍下料长度', substitution: colStirSpec.hoops.map(h => `${h.lengthMm}`).join(' + '), result: `= ${colStirSpec.lengthMm} mm（${colStirSpec.pieceCount}个独立箍/道）` },
+    { label: '加密区长度', formula: 'l_d = min(max(Hn/6, hc, 500), H/2)', substitution: `= min(max(⌈${colHeight}/6⌉, ${hcVal}, 500), ${colHeight}/2)`, result: `= ${denseZoneLen} mm` },
+    { label: '加密区道数(上下两端)', formula: 'n_d = 上下加密区的独立实布站位数（交叠区只计一次）', substitution: `端部50mm起布，加密区长${denseZoneLen}mm，间距${stir.spacingDense}mm`, result: `= ${denseCount}` },
+    { label: '非加密区道数', formula: 'n_n = 两端加密区之间的实际站位数', substitution: `区间 ${denseZoneLen} ~ ${colHeight-denseZoneLen}mm，间距${stir.spacingNormal}mm`, result: `= ${normalCount}` },
+    { label: '独立箍总根数与展开长', formula: '按各站位截面累加独立箍，变截面使用上段尺寸', substitution: `${hoopLayout.positions.length}道；总长 ${totalLengthMm.toFixed(1)}mm ÷ 1000`, result: `${stirCount} 根，平均 ${stirSingleL.toFixed(3)} m/根` },
     weightSteps('箍筋', stirCount, stirSingleL, stir.diameter),
   ];
   items.push({
     name: '箍筋', spec: p.stirrup,
-    length: `${stirSingleL.toFixed(3)}m × ${stirCount}根`,
+    length: `平均${stirSingleL.toFixed(3)}m × ${stirCount}根`,
     weight: `${stirW.toFixed(2)} kg`, color: '#27AE60',
     grade: stir.grade, diameter: stir.diameter, count: stirCount, lengthM: stirSingleL, weightKg: stirW,
     formulaSteps: colStirFormula,
@@ -1043,204 +897,18 @@ export function calcColumn(p: ColumnParams): CalcResult {
 }
 
 export function calcSlab(p: SlabParams): CalcResult {
-  const slabW = p.spanX;
-  const slabD = p.spanY;
-  const bx = parseSlabRebar(p.bottomX);
-  const by = parseSlabRebar(p.bottomY);
-  const tx = p.topX ? parseSlabRebar(p.topX) : null;
-  const ty = p.topY ? parseSlabRebar(p.topY) : null;
-  const items: CalcItem[] = [];
-  let total = 0;
-
-  // ── 底筋 (按支座类型区分锚固) ──
-  const bxLa = calcLa(bx.grade, bx.diameter, p.concreteGrade);
-  const bxDetail = slabBottomAnchorDetail(p.supportType, bx.diameter, bxLa);
-  const bxAnchorTotal = bxDetail.straight + bxDetail.bend; // 直段+弯折
-  const bxCount = Math.ceil(slabD / bx.spacing);
-  const bxLen = (slabW + 2 * bxAnchorTotal) / 1000;
-  const bxW = bxCount * bxLen * w(bx.diameter);
-  const supportLabel = p.supportType === 'simple' ? '简支' : p.supportType === 'continuous' ? '连续' : '悬挑';
-  const bxFormula: FormulaStep[] = [
-    { label: `锚固 (${supportLabel})`, formula: bxDetail.bend > 0 ? '直段+弯折' : '直段伸入', substitution: bxDetail.bend > 0 ? `= ${bxDetail.straight} + ${bxDetail.bend}` : `= ${bxDetail.straight}`, result: `= ${bxAnchorTotal} mm` },
-    { label: '锚固说明', formula: '22G101', substitution: '', result: bxDetail.description },
-    { label: '根数', formula: 'n = ⌈D / s⌉', substitution: `= ⌈${slabD} / ${bx.spacing}⌉`, result: `= ${bxCount}` },
-    { label: '单根长度', formula: 'L = W + 2×anc', substitution: `= ${slabW} + 2×${bxAnchorTotal}`, result: `= ${slabW + 2 * bxAnchorTotal} mm = ${bxLen.toFixed(2)} m` },
-    weightSteps('X向底筋', bxCount, bxLen, bx.diameter),
-  ];
-  items.push({
-    name: 'X向底筋', spec: p.bottomX,
-    length: `${bxLen.toFixed(2)}m × ${bxCount} (${supportLabel}锚${bxAnchorTotal}mm×2)`,
-    weight: `${bxW.toFixed(2)} kg`, color: '#C0392B',
-    grade: bx.grade, diameter: bx.diameter, count: bxCount, lengthM: bxLen, weightKg: bxW,
-    formulaSteps: bxFormula,
+  const layout=slabReinforcement(p);
+  const items: CalcItem[]=layout.groups.map(group=>{
+    const lengthM=group.lengthMm/1000,weightKg=group.count*lengthM*w(group.diameter);
+    return {name:group.name,spec:group.spec,length:`${lengthM.toFixed(3)}m × ${group.count}`,weight:`${weightKg.toFixed(2)} kg`,
+      color:group.color,grade:group.grade,diameter:group.diameter,count:group.count,lengthM,weightKg,
+      formulaSteps:[
+        {label:'根数',formula:'每排实布根数 × 独立钢筋段数',substitution:`${group.positions.length} × ${group.curves.length}`,result:`${group.count} 根`},
+        {label:'单根长度',formula:'直线段 + 圆弧段（模型中心线展开）',substitution:`层位 ${group.level.toFixed(1)}mm；方向 ${group.axis==='x'?'X':'Y'}`,result:`${group.lengthMm.toFixed(1)} mm`},
+        weightSteps(group.name,group.count,lengthM,group.diameter),
+      ]};
   });
-  total += bxW;
-
-  const byLa = calcLa(by.grade, by.diameter, p.concreteGrade);
-  const byDetail = slabBottomAnchorDetail(p.supportType, by.diameter, byLa);
-  const byAnchorTotal = byDetail.straight + byDetail.bend;
-  const byCount = Math.ceil(slabW / by.spacing);
-  const byLen = (slabD + 2 * byAnchorTotal) / 1000;
-  const byW = byCount * byLen * w(by.diameter);
-  const byFormula: FormulaStep[] = [
-    { label: `锚固 (${supportLabel})`, formula: byDetail.bend > 0 ? '直段+弯折' : '直段伸入', substitution: byDetail.bend > 0 ? `= ${byDetail.straight} + ${byDetail.bend}` : `= ${byDetail.straight}`, result: `= ${byAnchorTotal} mm` },
-    { label: '锚固说明', formula: '22G101', substitution: '', result: byDetail.description },
-    { label: '根数', formula: 'n = ⌈W / s⌉', substitution: `= ⌈${slabW} / ${by.spacing}⌉`, result: `= ${byCount}` },
-    { label: '单根长度', formula: 'L = D + 2×anc', substitution: `= ${slabD} + 2×${byAnchorTotal}`, result: `= ${slabD + 2 * byAnchorTotal} mm = ${byLen.toFixed(2)} m` },
-    weightSteps('Y向底筋', byCount, byLen, by.diameter),
-  ];
-  items.push({
-    name: 'Y向底筋', spec: p.bottomY,
-    length: `${byLen.toFixed(2)}m × ${byCount} (${supportLabel}锚${byAnchorTotal}mm×2)`,
-    weight: `${byW.toFixed(2)} kg`, color: '#E67E22',
-    grade: by.grade, diameter: by.diameter, count: byCount, lengthM: byLen, weightKg: byW,
-    formulaSteps: byFormula,
-  });
-  total += byW;
-
-  // ── 面筋 (含锚入支座) ──
-  // 面筋伸入支座: 连续板 ≥ la, 简支板 ≥ la/2, 悬挑板全长
-  if (tx) {
-    const txLa = calcLa(tx.grade, tx.diameter, p.concreteGrade);
-    const txAnchor = p.supportType === 'cantilever' ? 0 : p.supportType === 'continuous' ? txLa : Math.ceil(txLa / 2);
-    const txCount = Math.ceil(slabD / tx.spacing);
-    const txLen = (slabW + 2 * txAnchor) / 1000;
-    const txW = txCount * txLen * w(tx.diameter);
-    const txFormula: FormulaStep[] = [
-      { label: `面筋锚固 (${supportLabel})`, formula: p.supportType === 'continuous' ? 'anc = la' : 'anc = la/2', substitution: p.supportType === 'cantilever' ? '悬挑端无锚固' : `= ${txAnchor}`, result: `= ${txAnchor} mm` },
-      { label: '根数', formula: 'n = ⌈D / s⌉', substitution: `= ⌈${slabD} / ${tx.spacing}⌉`, result: `= ${txCount}` },
-      { label: '单根长度', formula: 'L = W + 2×anc', substitution: `= ${slabW} + 2×${txAnchor}`, result: `= ${slabW + 2 * txAnchor} mm = ${txLen.toFixed(2)} m` },
-      weightSteps('X向面筋', txCount, txLen, tx.diameter),
-    ];
-    items.push({ name: 'X向面筋', spec: p.topX, length: `${txLen.toFixed(2)}m × ${txCount}${txAnchor > 0 ? ` (含锚${txAnchor}mm×2)` : ''}`, weight: `${txW.toFixed(2)} kg`, color: '#8E44AD',
-      grade: tx.grade, diameter: tx.diameter, count: txCount, lengthM: txLen, weightKg: txW, formulaSteps: txFormula });
-    total += txW;
-  }
-  if (ty) {
-    const tyLa = calcLa(ty.grade, ty.diameter, p.concreteGrade);
-    const tyAnchor = p.supportType === 'cantilever' ? 0 : p.supportType === 'continuous' ? tyLa : Math.ceil(tyLa / 2);
-    const tyCount = Math.ceil(slabW / ty.spacing);
-    const tyLen = (slabD + 2 * tyAnchor) / 1000;
-    const tyW = tyCount * tyLen * w(ty.diameter);
-    const tyFormula: FormulaStep[] = [
-      { label: `面筋锚固 (${supportLabel})`, formula: p.supportType === 'continuous' ? 'anc = la' : 'anc = la/2', substitution: p.supportType === 'cantilever' ? '悬挑端无锚固' : `= ${tyAnchor}`, result: `= ${tyAnchor} mm` },
-      { label: '根数', formula: 'n = ⌈W / s⌉', substitution: `= ⌈${slabW} / ${ty.spacing}⌉`, result: `= ${tyCount}` },
-      { label: '单根长度', formula: 'L = D + 2×anc', substitution: `= ${slabD} + 2×${tyAnchor}`, result: `= ${slabD + 2 * tyAnchor} mm = ${tyLen.toFixed(2)} m` },
-      weightSteps('Y向面筋', tyCount, tyLen, ty.diameter),
-    ];
-    items.push({ name: 'Y向面筋', spec: p.topY, length: `${tyLen.toFixed(2)}m × ${tyCount}${tyAnchor > 0 ? ` (含锚${tyAnchor}mm×2)` : ''}`, weight: `${tyW.toFixed(2)} kg`, color: '#7D3C98',
-      grade: ty.grade, diameter: ty.diameter, count: tyCount, lengthM: tyLen, weightKg: tyW, formulaSteps: tyFormula });
-    total += tyW;
-  }
-
-  // ── 支座负筋 (22G101) ──
-  // 简支板→端支座: 伸入ln/4 + 梁宽/2 + 弯折12d
-  // 连续板→中间支座: 伸入ln/3(第一排) + 梁宽(直通) + 伸入另侧ln/3, 无弯折
-  const negSupportPos = p.supportType === 'continuous' ? 'middle' as const : 'end' as const;
-  const negPosLabel = negSupportPos === 'end' ? '端支座' : '中间支座';
-
-  const negX = p.supportNegX ? parseSlabRebar(p.supportNegX) : null;
-  if (negX) {
-    const negXExtend = slabNegBarExtend(slabW, negSupportPos);
-    const negXBend = negSupportPos === 'end' ? slabNegBarBend(negX.diameter) : 0;
-    const negXBeamPart = negSupportPos === 'end' ? Math.ceil(p.supportBeamWidth / 2) : p.supportBeamWidth;
-    // 端支座: 单侧 = extend + 梁宽/2 + 12d弯折, 两侧各一根
-    // 中间支座: 整根 = extend(左) + 梁宽(直通) + extend(右)
-    const negXSingleLen = negSupportPos === 'end'
-      ? negXExtend + negXBeamPart + negXBend
-      : negXExtend + negXBeamPart + negXExtend;
-    const negXCount = negSupportPos === 'end'
-      ? Math.ceil(slabD / negX.spacing) * 2  // 两侧各一根
-      : Math.ceil(slabD / negX.spacing);      // 中间支座一根直通
-    const negXLen = negXSingleLen / 1000;
-    const negXW = negXCount * negXLen * w(negX.diameter);
-    const extendFormula = negSupportPos === 'end' ? 'ln/4' : 'ln/3';
-    const negXFormula: FormulaStep[] = [
-      { label: `伸入跨中 (${negPosLabel})`, formula: extendFormula, substitution: `= ${slabW}/${negSupportPos === 'end' ? 4 : 3}`, result: `= ${negXExtend} mm` },
-      { label: '支座段', formula: negSupportPos === 'end' ? '梁宽/2' : '梁宽(直通)', substitution: `= ${negXBeamPart}`, result: `= ${negXBeamPart} mm` },
-      ...(negXBend > 0 ? [{ label: '端部弯折', formula: '12d', substitution: `= 12×${negX.diameter}`, result: `= ${negXBend} mm` }] : []),
-      { label: '单根长度', formula: negSupportPos === 'end' ? `L = ${extendFormula} + 梁宽/2 + 12d` : `L = ${extendFormula}×2 + 梁宽`, substitution: negSupportPos === 'end' ? `= ${negXExtend} + ${negXBeamPart} + ${negXBend}` : `= ${negXExtend}×2 + ${negXBeamPart}`, result: `= ${negXSingleLen} mm = ${negXLen.toFixed(3)} m` },
-      { label: '根数', formula: negSupportPos === 'end' ? 'n = ⌈D/s⌉ × 2(两侧)' : 'n = ⌈D/s⌉(直通)', substitution: negSupportPos === 'end' ? `= ⌈${slabD}/${negX.spacing}⌉ × 2` : `= ⌈${slabD}/${negX.spacing}⌉`, result: `= ${negXCount}` },
-      weightSteps('X向支座负筋', negXCount, negXLen, negX.diameter),
-    ];
-    const negXLenDesc = negSupportPos === 'end'
-      ? `${negXLen.toFixed(3)}m × ${negXCount} (两侧, 含弯折${negXBend}mm)`
-      : `${negXLen.toFixed(3)}m × ${negXCount} (直通过支座)`;
-    items.push({ name: 'X向支座负筋', spec: p.supportNegX!, length: negXLenDesc, weight: `${negXW.toFixed(2)} kg`, color: '#2980B9',
-      grade: negX.grade, diameter: negX.diameter, count: negXCount, lengthM: negXLen, weightKg: negXW, formulaSteps: negXFormula });
-    total += negXW;
-  }
-
-  const negY = p.supportNegY ? parseSlabRebar(p.supportNegY) : null;
-  if (negY) {
-    const negYExtend = slabNegBarExtend(slabD, negSupportPos);
-    const negYBend = negSupportPos === 'end' ? slabNegBarBend(negY.diameter) : 0;
-    const negYBeamPart = negSupportPos === 'end' ? Math.ceil(p.supportBeamWidth / 2) : p.supportBeamWidth;
-    const negYSingleLen = negSupportPos === 'end'
-      ? negYExtend + negYBeamPart + negYBend
-      : negYExtend + negYBeamPart + negYExtend;
-    const negYCount = negSupportPos === 'end'
-      ? Math.ceil(slabW / negY.spacing) * 2
-      : Math.ceil(slabW / negY.spacing);
-    const negYLen = negYSingleLen / 1000;
-    const negYW = negYCount * negYLen * w(negY.diameter);
-    const extendFormulaY = negSupportPos === 'end' ? 'ln/4' : 'ln/3';
-    const negYFormula: FormulaStep[] = [
-      { label: `伸入跨中 (${negPosLabel})`, formula: extendFormulaY, substitution: `= ${slabD}/${negSupportPos === 'end' ? 4 : 3}`, result: `= ${negYExtend} mm` },
-      { label: '支座段', formula: negSupportPos === 'end' ? '梁宽/2' : '梁宽(直通)', substitution: `= ${negYBeamPart}`, result: `= ${negYBeamPart} mm` },
-      ...(negYBend > 0 ? [{ label: '端部弯折', formula: '12d', substitution: `= 12×${negY.diameter}`, result: `= ${negYBend} mm` }] : []),
-      { label: '单根长度', formula: negSupportPos === 'end' ? `L = ${extendFormulaY} + 梁宽/2 + 12d` : `L = ${extendFormulaY}×2 + 梁宽`, substitution: negSupportPos === 'end' ? `= ${negYExtend} + ${negYBeamPart} + ${negYBend}` : `= ${negYExtend}×2 + ${negYBeamPart}`, result: `= ${negYSingleLen} mm = ${negYLen.toFixed(3)} m` },
-      { label: '根数', formula: negSupportPos === 'end' ? 'n = ⌈W/s⌉ × 2(两侧)' : 'n = ⌈W/s⌉(直通)', substitution: negSupportPos === 'end' ? `= ⌈${slabW}/${negY.spacing}⌉ × 2` : `= ⌈${slabW}/${negY.spacing}⌉`, result: `= ${negYCount}` },
-      weightSteps('Y向支座负筋', negYCount, negYLen, negY.diameter),
-    ];
-    const negYLenDesc = negSupportPos === 'end'
-      ? `${negYLen.toFixed(3)}m × ${negYCount} (两侧, 含弯折${negYBend}mm)`
-      : `${negYLen.toFixed(3)}m × ${negYCount} (直通过支座)`;
-    items.push({ name: 'Y向支座负筋', spec: p.supportNegY!, length: negYLenDesc, weight: `${negYW.toFixed(2)} kg`, color: '#16A085',
-      grade: negY.grade, diameter: negY.diameter, count: negYCount, lengthM: negYLen, weightKg: negYW, formulaSteps: negYFormula });
-    total += negYW;
-  }
-
-  // ── 分布筋 ──
-  // 分布筋垂直于受力筋方向，沿底筋方向铺设
-  // 按两个方向底筋各配一层分布筋，长度取对应板跨，含搭接150mm
-  if (p.distribution) {
-    const dist = parseSlabRebar(p.distribution);
-    const lapLen = 150; // 22G101 分布筋搭接 ≥150mm
-
-    // 分布筋沿X底筋方向 (垂直于Y方向)
-    const distXCount = Math.ceil(slabW / dist.spacing);
-    const distXLen = (slabD + lapLen) / 1000;
-    const distXW = distXCount * distXLen * w(dist.diameter);
-
-    // 分布筋沿Y底筋方向 (垂直于X方向)
-    const distYCount = Math.ceil(slabD / dist.spacing);
-    const distYLen = (slabW + lapLen) / 1000;
-    const distYW = distYCount * distYLen * w(dist.diameter);
-
-    const distTotal = distXW + distYW;
-    const distTotalCount = distXCount + distYCount;
-    const distFormula: FormulaStep[] = [
-      { label: '沿X方向分布筋', formula: 'n₁ = ⌈W/s⌉', substitution: `= ⌈${slabW}/${dist.spacing}⌉`, result: `= ${distXCount}根` },
-      { label: '沿X方向单根长', formula: 'L₁ = D + lap', substitution: `= ${slabD} + ${lapLen}`, result: `= ${slabD + lapLen}mm = ${distXLen.toFixed(3)}m` },
-      { label: '沿Y方向分布筋', formula: 'n₂ = ⌈D/s⌉', substitution: `= ⌈${slabD}/${dist.spacing}⌉`, result: `= ${distYCount}根` },
-      { label: '沿Y方向单根长', formula: 'L₂ = W + lap', substitution: `= ${slabW} + ${lapLen}`, result: `= ${slabW + lapLen}mm = ${distYLen.toFixed(3)}m` },
-      { label: '搭接长度', formula: 'lap ≥ 150mm (22G101)', substitution: `= ${lapLen}`, result: `= ${lapLen}mm` },
-      weightSteps('分布筋合计', distTotalCount, (distXW + distYW) / (distTotalCount * w(dist.diameter)) > 0 ? (distXW + distYW) / (distTotalCount * w(dist.diameter)) : 0, dist.diameter),
-    ];
-    // Override last step with correct combined weight
-    distFormula[distFormula.length - 1] = {
-      label: '分布筋重量',
-      formula: 'W = (n₁×L₁ + n₂×L₂) × w',
-      substitution: `= (${distXCount}×${distXLen.toFixed(3)} + ${distYCount}×${distYLen.toFixed(3)}) × ${w(dist.diameter).toFixed(4)}`,
-      result: `= ${distTotal.toFixed(2)} kg`,
-    };
-    items.push({ name: '分布筋', spec: p.distribution, length: `X向${distXCount}根×${distXLen.toFixed(3)}m + Y向${distYCount}根×${distYLen.toFixed(3)}m (含搭接${lapLen}mm)`, weight: `${distTotal.toFixed(2)} kg`, color: '#27AE60',
-      grade: dist.grade, diameter: dist.diameter, count: distTotalCount, lengthM: (distXW + distYW) / (distTotalCount * w(dist.diameter)), weightKg: distTotal, formulaSteps: distFormula });
-    total += distTotal;
-  }
-
-  return buildResult(items, total, 'slab');
+  return buildResult(items,items.reduce((sum,item)=>sum+item.weightKg,0),'slab');
 }
 
 export function calcShearWall(p: ShearWallParams): CalcResult {
@@ -1252,31 +920,27 @@ export function calcShearWall(p: ShearWallParams): CalcResult {
   const items: CalcItem[] = [];
   let total = 0;
 
-  const vertCount = Math.ceil(p.lw / vert.spacing) * 2;
-  const vertL = (p.hw + 500) / 1000;
-  const vertW = vertCount * vertL * w(vert.diameter);
-  const vertFormula: FormulaStep[] = [
-    { label: '根数', formula: 'n = ⌈lw / s⌉ × 2(双排)', substitution: `= ⌈${p.lw} / ${vert.spacing}⌉ × 2`, result: `= ${vertCount}` },
-    { label: '单根长度', formula: 'L = hw + 500(锚固)', substitution: `= ${p.hw} + 500`, result: `= ${p.hw + 500} mm = ${vertL.toFixed(2)} m` },
-    weightSteps('竖向分布筋', vertCount, vertL, vert.diameter),
-  ];
-  items.push({ name: '竖向分布筋', spec: p.vertBar, length: `${vertL.toFixed(2)}m × ${vertCount}根 (双排)`, weight: `${vertW.toFixed(2)} kg`, color: '#C0392B',
-    grade: vert.grade, diameter: vert.diameter, count: vertCount, lengthM: vertL, weightKg: vertW, formulaSteps: vertFormula });
-  total += vertW;
+  const distributed=wallDistributedReinforcement(p);
+  const addWall=(name:string,spec:string,bar:{grade:string;diameter:number},count:number,lengthM:number,color:string,description:string)=>{
+    const weightKg=count*lengthM*w(bar.diameter);
+    items.push({name,spec,grade:bar.grade,diameter:bar.diameter,count,lengthM,weightKg,color,length:`${lengthM.toFixed(3)}m × ${count}根（${description}）`,weight:`${weightKg.toFixed(2)} kg`,formulaSteps:[
+      {label:'模型分段计量',formula:'按实际站位与洞口截段逐根统计；毫米换算为米',substitution:description,result:`${count} 根 × ${lengthM.toFixed(3)} m`},weightSteps(name,count,lengthM,bar.diameter),
+    ]});total+=weightKg;
+  };
+  const addSegments=(name:string,spec:string,bar:{grade:string;diameter:number},lengths:number[],color:string)=>{
+    const groups=new Map<number,number>();
+    for(const length of lengths){const key=Math.round(length*1e6)/1e6;groups.set(key,(groups.get(key)||0)+1);}
+    let i=0;for(const [length,count] of groups)addWall(name+(groups.size>1?`（分段${++i}）`:''),spec,bar,count,length,color,'按模型墙身净段，不含尚未建模的端部锚固');
+  };
+  addSegments('竖向分布筋',p.vertBar,vert,distributed.vertBars.map(q=>q.height),'#C0392B');
+  addSegments('水平分布筋',p.horizBar,horiz,distributed.horizBars.map(q=>q.length),'#2980B9');
+  const hole=wallOpening(p)[0];
+  if(hole){
+    if(p.openingVertBar)addWall('洞口侧边补强筋',p.openingVertBar,parseSlabRebar(p.openingVertBar),4,(hole.y1-hole.y0)/1000,'#EC4899','两侧边、两墙面各1根，未含洞边锚固');
+    if(p.openingHorizBar)addWall('洞口上下补强筋',p.openingHorizBar,parseSlabRebar(p.openingHorizBar),4,(hole.x1-hole.x0)/1000,'#EC4899','上下边、两墙面各1根，未含洞边锚固');
+  }
 
-  const horizCount = Math.ceil(p.hw / horiz.spacing) * 2;
-  const horizL = (p.lw + 2 * 300) / 1000;
-  const horizW = horizCount * horizL * w(horiz.diameter);
-  const horizFormula: FormulaStep[] = [
-    { label: '根数', formula: 'n = ⌈hw / s⌉ × 2(双排)', substitution: `= ⌈${p.hw} / ${horiz.spacing}⌉ × 2`, result: `= ${horizCount}` },
-    { label: '单根长度', formula: 'L = lw + 2×300(锚固)', substitution: `= ${p.lw} + 2×300`, result: `= ${p.lw + 600} mm = ${horizL.toFixed(2)} m` },
-    weightSteps('水平分布筋', horizCount, horizL, horiz.diameter),
-  ];
-  items.push({ name: '水平分布筋', spec: p.horizBar, length: `${horizL.toFixed(2)}m × ${horizCount}根 (双排)`, weight: `${horizW.toFixed(2)} kg`, color: '#2980B9',
-    grade: horiz.grade, diameter: horiz.diameter, count: horizCount, lengthM: horizL, weightKg: horizW, formulaSteps: horizFormula });
-  total += horizW;
-
-  const boundaryLen = Math.max(p.bw, 400);
+  const boundaryLen = p.boundaryLength || Math.max(p.bw, 400);
   const llE = calcLlE(boundaryR.grade, boundaryR.diameter, p.concreteGrade, p.seismicGrade);
   const boundaryL = (p.hw + llE) / 1000;
   const bCount2 = boundaryR.count * 2;
@@ -1292,44 +956,46 @@ export function calcShearWall(p: ShearWallParams): CalcResult {
   total += boundaryW;
 
   const bStir = boundaryStir;
-  const bPerim = 2 * (boundaryLen + p.bw - 2 * cover) / 1000;
-  const bStirCount = Math.ceil(p.hw / bStir.spacingDense) * 2;
+  const boundaryForm = p.boundaryForm || 'concealed';
+  const depth = boundaryForm === 'concealed' ? p.bw : p.bw + Math.max(p.boundaryProjection || 0, p.bw * (boundaryForm === 'endColumn' ? .35 : boundaryForm === 'cornerWall' ? .5 : .2));
+  const length = boundaryLen * (boundaryForm === 'wingWall' ? 1.35 : boundaryForm === 'cornerWall' ? 1.18 : 1);
+  const bShape = createCompositeStirrupSpec({ widthMm: Math.max(length - 2 * cover, length * .35) - bStir.diameter, heightMm: Math.max(depth - 2 * cover, Math.min(p.bw * .6, depth)) - bStir.diameter, diameterMm: bStir.diameter, legs: bStir.legs });
+  const bPerim = bShape.lengthMm / bShape.pieceCount / 1000;
+  const bStirRows = Math.max(0, Math.ceil((p.hw - 50) / bStir.spacingDense) - 1) * 2;
+  const bStirCount = bStirRows * bShape.pieceCount;
   const bStirW = bStirCount * bPerim * w(bStir.diameter);
   const bStirFormula: FormulaStep[] = [
-    { label: '边缘构件尺寸', formula: 'l_boundary = max(bw, 400)', substitution: `= max(${p.bw}, 400)`, result: `= ${boundaryLen} mm` },
-    { label: '箍筋周长', formula: 'C = 2×(l_boundary + bw - 2c)', substitution: `= 2×(${boundaryLen} + ${p.bw} - 2×${cover})`, result: `= ${(bPerim * 1000).toFixed(0)} mm` },
-    { label: '根数', formula: 'n = ⌈hw / s⌉ × 2(两端)', substitution: `= ⌈${p.hw} / ${bStir.spacingDense}⌉ × 2`, result: `= ${bStirCount}` },
+    { label: '每道复合箍', formula: '独立外箍 + 独立内箍', substitution: `${bStir.legs} 肢，含各自圆弧与 135° 弯钩`, result: `${bShape.pieceCount} 个 / 道` },
+    { label: '两端箍筋数量', formula: '实际标高道数 × 每道个数 × 两端', substitution: `间距 ${bStir.spacingDense} mm`, result: `${bStirCount} 个` },
     weightSteps('边缘箍筋', bStirCount, bPerim, bStir.diameter),
   ];
-  items.push({ name: '边缘构件箍筋', spec: p.boundaryStirrup, length: `${bStirCount}根 × ${bPerim.toFixed(2)}m (两端)`, weight: `${bStirW.toFixed(2)} kg`, color: '#27AE60',
-    grade: bStir.grade, diameter: bStir.diameter, count: bStirCount, lengthM: bPerim, weightKg: bStirW, formulaSteps: bStirFormula });
+  items.push({ name: '边缘构件箍筋', spec: p.boundaryStirrup, length: `${bStirCount}个 × 平均${bPerim.toFixed(3)}m (两端)`, weight: `${bStirW.toFixed(2)} kg`, color: '#27AE60', grade: bStir.grade, diameter: bStir.diameter, count: bStirCount, lengthM: bPerim, weightKg: bStirW, formulaSteps: bStirFormula });
   total += bStirW;
 
-  // ── 拉结筋 (墙身双排分布筋之间的拉结) — GB50010 §11.7.12 ──
+  // Same hook shape and placements as the 3D wall model.
+  if((boundaryForm==='wingWall'||boundaryForm==='cornerWall')&&(p.boundaryProjection||0)>0){
+    const projection=p.boundaryProjection!,outerWidth=Math.max((boundaryForm==='wingWall'?boundaryLen:boundaryLen*.75)-2*cover-bStir.diameter,40),outerDepth=Math.max(projection-2*cover-bStir.diameter,40);
+    const outerSpec=createCompositeStirrupSpec({widthMm:outerWidth,heightMm:outerDepth,diameterMm:bStir.diameter,legs:2});
+    addWall('边缘凸出段纵筋',p.boundaryMain,boundaryR,Math.max(Math.round(boundaryR.count/2),2)*2,boundaryL,'#8E44AD','两端凸出段独立纵筋，含与主边缘筋相同搭接');
+    addWall('边缘凸出段箍筋',p.boundaryStirrup,bStir,bStirRows,outerSpec.lengthMm/1000,'#27AE60','两端各一个独立封闭箍');
+    const outerTieLen=Math.max(p.bw/2+projection-cover-Math.max(depth-2*cover,Math.min(p.bw*.6,depth))/2,0);
+    const tieSpec=createTieBarShapeSpec({sideOffsetMm:outerTieLen/2,tieDiameterMm:bStir.diameter,sideBarDiameterMm:bStir.diameter});
+    if(outerTieLen>20)addWall('边缘凸出段拉筋',p.boundaryStirrup,bStir,bStirRows*(boundaryForm==='cornerWall'?2:3),tieSpec.lengthMm/1000,'#27AE60','按两端实际拉筋位置统计，含135°弯钩');
+  }
+
   if (p.tieBar) {
     const tie = parseSlabRebar(p.tieBar);
-    // 拉结筋长度 = 墙厚 - 2×保护层 + 2×弯钩(max(6d, 50mm))
-    const tieStraight = p.bw - 2 * cover;
-    const tieHook = Math.max(6 * tie.diameter, 50);
-    const tieSingleLen = (tieStraight + 2 * tieHook) / 1000;
-    // 拉结筋数量: 竖向间距 × 水平间距 铺满墙身 (边缘构件区域除外)
-    const wallBodyLen = Math.max(p.lw - 2 * boundaryLen, 0);
-    const tieHorizCount = Math.max(Math.floor(wallBodyLen / tie.spacing), 1);
-    const tieVertCount = Math.max(Math.floor(p.hw / tie.spacing), 1);
-    const tieTotalCount = tieHorizCount * tieVertCount;
+    const shape = createTieBarShapeSpec({ sideOffsetMm: p.bw / 2 - cover - horiz.diameter / 2, tieDiameterMm: tie.diameter, sideBarDiameterMm: horiz.diameter });
+    const tieSingleLen = shape.lengthMm / 1000;
+    const tieTotalCount = wallTiePositions(p).length;
     const tieWt = tieTotalCount * tieSingleLen * w(tie.diameter);
     const tieFormula: FormulaStep[] = [
-      { label: '拉结筋直段', formula: 'L_straight = bw - 2c', substitution: `= ${p.bw} - 2×${cover}`, result: `= ${tieStraight} mm` },
-      { label: '弯钩长度', formula: 'hook = max(6d, 50)', substitution: `= max(6×${tie.diameter}, 50)`, result: `= ${tieHook} mm` },
-      { label: '单根长度', formula: 'L = L_straight + 2×hook', substitution: `= ${tieStraight} + 2×${tieHook}`, result: `= ${tieStraight + 2 * tieHook} mm = ${tieSingleLen.toFixed(3)} m` },
-      { label: '水平方向根数', formula: 'n_h = ⌊(lw - 2×l_boundary) / s⌋', substitution: `= ⌊(${p.lw} - 2×${boundaryLen}) / ${tie.spacing}⌋`, result: `= ${tieHorizCount}` },
-      { label: '竖向根数', formula: 'n_v = ⌊hw / s⌋', substitution: `= ⌊${p.hw} / ${tie.spacing}⌋`, result: `= ${tieVertCount}` },
-      { label: '总根数', formula: 'n = n_h × n_v', substitution: `= ${tieHorizCount} × ${tieVertCount}`, result: `= ${tieTotalCount}` },
+      { label: '弯钩平直段', formula: 'max(10d, 75)', substitution: `max(10×${tie.diameter}, 75)`, result: `${shape.hookLenMm} mm` },
+      { label: '单根展开长度', formula: '直段 + 两端圆弧 + 两端平直段', substitution: '与三维拉筋中心线共用几何', result: `${(tieSingleLen * 1000).toFixed(1)} mm` },
+      { label: '布置根数', formula: '墙身网格定位，避让洞口，勾住水平筋', substitution: `间距 ${tie.spacing} mm`, result: `${tieTotalCount} 根` },
       weightSteps('拉结筋', tieTotalCount, tieSingleLen, tie.diameter),
     ];
-    items.push({ name: '拉结筋', spec: p.tieBar, length: `${tieSingleLen.toFixed(3)}m × ${tieTotalCount}根`,
-      weight: `${tieWt.toFixed(2)} kg`, color: '#1ABC9C',
-      grade: tie.grade, diameter: tie.diameter, count: tieTotalCount, lengthM: tieSingleLen, weightKg: tieWt, formulaSteps: tieFormula });
+    items.push({ name: '拉结筋', spec: p.tieBar, length: `${tieSingleLen.toFixed(3)}m × ${tieTotalCount}根`, weight: `${tieWt.toFixed(2)} kg`, color: '#1ABC9C', grade: tie.grade, diameter: tie.diameter, count: tieTotalCount, lengthM: tieSingleLen, weightKg: tieWt, formulaSteps: tieFormula });
     total += tieWt;
   }
 
@@ -1341,103 +1007,21 @@ export function calcShearWall(p: ShearWallParams): CalcResult {
 // ═══════════════════════════════════════════════════════════════════
 
 export function calcStair(p: StairParams): CalcResult {
-  const botR = parseSlabRebar(p.bottomBar);
-  const topR = parseSlabRebar(p.topBar);
-  const distR = parseSlabRebar(p.distBar);
-  const cover = p.cover || 15;
-
-  const totalRise = p.stepCount * p.stepHeight;
-  const totalRun = p.stepCount * p.stepWidth;
-  const slopeLen = Math.sqrt(totalRise * totalRise + totalRun * totalRun); // 踏步段斜长
-  const isBT = p.stairType === 'BT';
-  const botFlatLen = isBT ? (p.botFlatLen ?? 700) : 0; // BT型低端平板长
-  // BT型: 纵筋沿平板水平段 + 踏步段斜面
-  const slabLen = isBT ? botFlatLen + slopeLen : slopeLen;
-  const flightW = p.flightWidth;
-
-  const items: CalcItem[] = [];
-  let stairTotal = 0;
-
-  function pushStair(name: string, spec: string, length: string, grade: string, diameter: number, count: number, lengthM: number, color: string, formulaSteps?: FormulaStep[]) {
-    const weightKg = count * lengthM * w(diameter);
-    const steps = formulaSteps ? [...formulaSteps, weightSteps(name, count, lengthM, diameter)] : [weightSteps(name, count, lengthM, diameter)];
-    items.push({ name, spec, length, weight: `${weightKg.toFixed(2)} kg`, color, grade, diameter, count, lengthM, weightKg, formulaSteps: steps });
-    stairTotal += weightKg;
-  }
-
-  // 下部纵筋
-  const botAnc = isBT
-    ? Math.max(p.beamB / 2, 5 * botR.diameter) // BT: 低端锚入梯梁 ≥b/2 且 ≥5d
-    : Math.min(Math.round(p.botPlatformLen * 0.8), 300);
-  const topAnc = Math.min(Math.round(p.topPlatformLen * 0.8), 300);
-  const botBarLen = slabLen + botAnc + topAnc;
-  const botBarLenM = botBarLen / 1000;
-  const botBarCount = Math.floor((flightW - 2 * cover) / botR.spacing) + 1;
-  const botFormula: FormulaStep[] = isBT ? [
-    { label: '踏步段斜长', formula: 'L_slope = √(H² + B²)', substitution: `= √(${totalRise}² + ${totalRun}²)`, result: `= ${Math.round(slopeLen)} mm` },
-    { label: '低端平板水平长', formula: 'L_flat', substitution: '', result: `= ${botFlatLen} mm` },
-    { label: '低端锚固', formula: 'L_anc1 = max(b/2, 5d)', substitution: `= max(${p.beamB}/2, 5×${botR.diameter})`, result: `= ${Math.round(botAnc)} mm` },
-    { label: '高端锚入', formula: 'L_anc2 = min(0.8×上平台, 300)', substitution: `= min(0.8×${p.topPlatformLen}, 300)`, result: `= ${topAnc} mm` },
-    { label: '单根长度', formula: 'L = L_flat + L_slope + L_anc1 + L_anc2', substitution: `= ${botFlatLen} + ${Math.round(slopeLen)} + ${Math.round(botAnc)} + ${topAnc}`, result: `= ${Math.round(botBarLen)} mm = ${botBarLenM.toFixed(2)} m` },
-    { label: '根数', formula: 'n = ⌊(w - 2c) / s⌋ + 1', substitution: `= ⌊(${flightW} - 2×${cover}) / ${botR.spacing}⌋ + 1`, result: `= ${botBarCount}` },
-  ] : [
-    { label: '梯板斜长', formula: 'L_slab = √(H² + B²)', substitution: `= √(${totalRise}² + ${totalRun}²)`, result: `= ${Math.round(slabLen)} mm` },
-    { label: '两端锚入', formula: 'L_anc = min(0.8×下平台, 300) + min(0.8×上平台, 300)', substitution: `= ${botAnc} + ${topAnc}`, result: `= ${botAnc + topAnc} mm` },
-    { label: '单根长度', formula: 'L = L_slab + L_anc', substitution: `= ${Math.round(slabLen)} + ${botAnc + topAnc}`, result: `= ${Math.round(botBarLen)} mm = ${botBarLenM.toFixed(2)} m` },
-    { label: '根数', formula: 'n = ⌊(w - 2c) / s⌋ + 1', substitution: `= ⌊(${flightW} - 2×${cover}) / ${botR.spacing}⌋ + 1`, result: `= ${botBarCount}` },
-  ];
-  pushStair('下部纵筋', p.bottomBar, `${botBarLenM.toFixed(2)}m × ${botBarCount}根`,
-    botR.grade, botR.diameter, botBarCount, botBarLenM, '#C0392B', botFormula);
-
-  // 上部纵筋 (BT与AT类似，两端各一段负筋，ln/4处截断，弯钩15d)
-  const topBarLen = isBT
-    ? (botFlatLen + slopeLen) / 4 * 2 + (p.beamB - cover) * 2 + 15 * topR.diameter * 2  // 两端各一段
-    : slabLen + botAnc + topAnc;
-  const topBarLenM = (isBT
-    ? ((botFlatLen + slopeLen) / 4 + (p.beamB - cover) + 15 * topR.diameter)
-    : topBarLen) / 1000;
-  const topBarCount = Math.floor((flightW - 2 * cover) / topR.spacing) + 1;
-  const ln4 = Math.round((botFlatLen + slopeLen) / 4);
-  const topAncLen = Math.round(p.beamB - cover);
-  const topHookLen = 15 * topR.diameter;
-  const topFormula: FormulaStep[] = isBT ? [
-    { label: '梯板总长 ln', formula: 'ln = L_flat + L_slope', substitution: `= ${botFlatLen} + ${Math.round(slopeLen)}`, result: `= ${Math.round(botFlatLen + slopeLen)} mm` },
-    { label: '板内延伸', formula: 'L_ext = ln/4', substitution: `= ${Math.round(botFlatLen + slopeLen)}/4`, result: `= ${ln4} mm` },
-    { label: '锚入梯梁', formula: 'L_anc = b梁 - c', substitution: `= ${p.beamB} - ${cover}`, result: `= ${topAncLen} mm` },
-    { label: '端部弯钩', formula: 'L_hook = 15d', substitution: `= 15×${topR.diameter}`, result: `= ${topHookLen} mm` },
-    { label: '单段长度', formula: 'L_piece = L_ext + L_anc + L_hook', substitution: `= ${ln4} + ${topAncLen} + ${topHookLen}`, result: `= ${ln4 + topAncLen + topHookLen} mm = ${((ln4 + topAncLen + topHookLen) / 1000).toFixed(2)} m` },
-    { label: '根数(两端各一段)', formula: 'n = 2 × ⌊(w - 2c) / s⌋ + 1', substitution: `= 2 × ⌊(${flightW} - 2×${cover}) / ${topR.spacing}⌋ + 1`, result: `= ${topBarCount * 2}` },
-  ] : [
-    { label: '单根长度', formula: '同下部纵筋路径', substitution: `= ${Math.round(slabLen)} + ${botAnc + topAnc}`, result: `= ${Math.round(topBarLen)} mm = ${topBarLenM.toFixed(2)} m` },
-    { label: '根数', formula: 'n = ⌊(w - 2c) / s⌋ + 1', substitution: `= ⌊(${flightW} - 2×${cover}) / ${topR.spacing}⌋ + 1`, result: `= ${topBarCount}` },
-  ];
-  const topPieceLen = isBT ? (ln4 + topAncLen + topHookLen) / 1000 : topBarLenM;
-  const topTotalCount = isBT ? topBarCount * 2 : topBarCount;
-  pushStair('上部纵筋', p.topBar, isBT
-    ? `${topPieceLen.toFixed(2)}m × ${topTotalCount}根 (两端各${topBarCount})`
-    : `${topBarLenM.toFixed(2)}m × ${topBarCount}根`,
-    topR.grade, topR.diameter, topTotalCount, topPieceLen, '#8E44AD', topFormula);
-
-  // 分布筋 (沿斜面等间距，上下各一层；BT型还包含平板段)
-  const distBarLen = flightW - 2 * cover;
-  const distBarLenM = distBarLen / 1000;
-  const distTotalSpan = isBT ? (botFlatLen + slopeLen) : slopeLen;
-  const distCountPerLayer = Math.floor(distTotalSpan / distR.spacing);
-  const distTotalCount = distCountPerLayer * 2;
-  const distFormula: FormulaStep[] = [
-    { label: '单根长度', formula: 'L = 梯段宽 - 2c', substitution: `= ${flightW} - 2×${cover}`, result: `= ${distBarLen} mm = ${distBarLenM.toFixed(2)} m` },
-    { label: '每层根数', formula: isBT ? 'n = ⌊(L_flat+L_slope) / s⌋' : 'n = ⌊L_slab / s⌋', substitution: `= ⌊${Math.round(distTotalSpan)} / ${distR.spacing}⌋`, result: `= ${distCountPerLayer}` },
-    { label: '总根数', formula: 'N = n × 2(上下两层)', substitution: `= ${distCountPerLayer} × 2`, result: `= ${distTotalCount}` },
-  ];
-  pushStair('分布筋', p.distBar, `${distBarLenM.toFixed(2)}m × ${distTotalCount}根 (上下各${distCountPerLayer})`,
-    distR.grade, distR.diameter, distTotalCount, distBarLenM, '#27AE60', distFormula);
-
-  return buildResult(items, stairTotal, 'stair');
+  const layout=stairReinforcement(p),items:CalcItem[]=[];
+  const add=(name:string,spec:string,bar:typeof layout.botR,count:number,lengthM:number,description:string,color:string)=>{
+    const weightKg=count*lengthM*w(bar.diameter);
+    items.push({name,spec,grade:bar.grade,diameter:bar.diameter,count,lengthM,weightKg,color,
+      length:`${lengthM.toFixed(3)}m × ${count}根 (${description})`,weight:`${weightKg.toFixed(2)} kg`,formulaSteps:[
+        {label:'模型中心线长度',formula:'L(m) = 连续路径直段与圆弧的展开长度',substitution:description,result:`${(lengthM*1000).toFixed(1)} mm ÷ 1000 = ${lengthM.toFixed(3)} m`},
+        {label:'实布根数',formula:name==='分布筋'?'N = 平板及斜板实际站位数 × 2层':'N = 宽度内满足保护层与半径的站位数',substitution:`保护层 ${p.cover}mm；直径 ${bar.diameter}mm；间距 ${bar.spacing}mm`,result:`${count} 根`},
+        weightSteps(name,count,lengthM,bar.diameter),
+      ]});
+  };
+  add('下部纵筋',p.bottomBar,layout.botR,layout.botBarZs.length,layout.bottomCurve.getLength(),'含模型两端锚入及转角','#C0392B');
+  layout.topCurves.forEach((curve,i)=>add(`上部纵筋（${i?'高':'低'}端）`,p.topBar,layout.topR,layout.topBarZs.length,curve.getLength(),'两端各为独立负筋，含端弯圆弧','#8E44AD'));
+  add('分布筋',p.distBar,layout.distR,layout.distBarPositions.length*2,layout.distLengthM,'上下各一层','#27AE60');
+  return buildResult(items,items.reduce((sum,item)=>sum+item.weightKg,0),'stair');
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// 楼梯配筋率计算 (22G101-2 AT型)
-// ═══════════════════════════════════════════════════════════════════
 
 export interface StairRatioResult {
   bottom: RebarRatioResult;
@@ -1455,8 +1039,8 @@ export function calcStairRebarRatios(p: StairParams): StairRatioResult {
   const fyTop = FY[topR.grade] || 360;
 
   // 板类构件: As = (b - 2c) / s + 1 根 × πd²/4
-  const botCount = Math.floor((b - 2 * cover) / botR.spacing) + 1;
-  const topCount = Math.floor((b - 2 * cover) / topR.spacing) + 1;
+  const botCount = stairReinforcement(p).botBarZs.length;
+  const topCount = stairReinforcement(p).topBarZs.length;
   const AsBot = botCount * rebarArea(botR.diameter);
   const AsTop = topCount * rebarArea(topR.diameter);
 
@@ -1481,7 +1065,7 @@ export function calcStairRebarRatios(p: StairParams): StairRatioResult {
 
   function ratioSteps(pos: string, count: number, d: number, fy: number, h0: number, As: number, rho: number, rhoMin: number, spacing: number): FormulaStep[] {
     return [
-      { label: `${pos}钢筋根数`, formula: 'n = ⌊(b-2c)/s⌋+1', substitution: `= ⌊(${b}-2×${cover})/${spacing}⌋+1`, result: `= ${count}` },
+      { label: `${pos}钢筋根数`, formula: 'n = ⌊(b-2c-d)/s⌋+1', substitution: `= ⌊(${b}-2×${cover}-${d})/${spacing}⌋+1`, result: `= ${count}` },
       { label: `${pos}钢筋面积`, formula: 'As = n × π × d² / 4', substitution: `= ${count} × π × ${d}² / 4`, result: `= ${As.toFixed(0)} mm²` },
       { label: '有效高度', formula: 'h₀ = t - c - d/2', substitution: `= ${p.slabThickness} - ${cover} - ${d}/2`, result: `= ${h0.toFixed(0)} mm` },
       { label: '配筋率', formula: 'ρ = As / (b × h₀)', substitution: `= ${As.toFixed(0)} / (${b} × ${h0.toFixed(0)})`, result: `= ${(rho * 100).toFixed(3)}%` },
@@ -1500,106 +1084,26 @@ export function calcStairRebarRatios(p: StairParams): StairRatioResult {
 // ═══════════════════════════════════════════════════════════════════
 
 export function calcStairBarShapes(p: StairParams): BarShape[] {
-  const shapes: BarShape[] = [];
-  const botR = parseSlabRebar(p.bottomBar);
-  const topR = parseSlabRebar(p.topBar);
-  const distR = parseSlabRebar(p.distBar);
-  const cover = p.cover || 15;
-
-  const totalRise = p.stepCount * p.stepHeight;
-  const totalRun = p.stepCount * p.stepWidth;
-  const slopeLen = Math.sqrt(totalRise * totalRise + totalRun * totalRun);
-  const isBT = p.stairType === 'BT';
-  const botFlatLen = isBT ? (p.botFlatLen ?? 700) : 0;
-  const beamB = p.beamB;
-
-  const cosA = totalRun / slopeLen;
-  const bot5d = 5 * botR.diameter;
-
-  const botBarCount = Math.floor((p.flightWidth - 2 * cover) / botR.spacing) + 1;
-  const topBarCount = Math.floor((p.flightWidth - 2 * cover) / topR.spacing) + 1;
-
-  if (isBT) {
-    // ── BT型 ──
-    // 下部纵筋: 水平平板段 + 斜面段 + 两端锚固
-    // 低端锚固: 沿延长线伸入梯梁, max(b/2, 5d)
-    const botAncHorizLow = Math.max(beamB / 2, bot5d);
-    const botAncSlopeLow = Math.round(botAncHorizLow); // 低端是水平锚固
-    // 高端锚固: 沿斜面延长线伸入梯梁
-    const botAncHorizHigh = Math.max(beamB / 2, bot5d);
-    const botAncSlopeHigh = Math.round(botAncHorizHigh / cosA);
-    const botBodyLen = Math.round(botFlatLen + slopeLen);
-    const botTotalLen = botBodyLen + botAncSlopeLow + botAncSlopeHigh;
-    shapes.push({
-      name: '下部纵筋', spec: p.bottomBar, shapeType: 'straight',
-      count: botBarCount, color: '#C0392B',
-      totalLen: botTotalLen, bodyLen: botBodyLen,
-      anchorLen: Math.round((botAncSlopeLow + botAncSlopeHigh) / 2),
-    });
-
-    // 上部纵筋 (两端各一段)
-    const ln = Math.round(botFlatLen + slopeLen);
-    const topLn4 = Math.round(ln / 4);
-    const topAncLen = Math.round(beamB - cover);
-    const topHookLen = 15 * topR.diameter;
-    const topPieceLen = topLn4 + topAncLen + topHookLen;
-    shapes.push({
-      name: '上部纵筋', spec: p.topBar, shapeType: 'bentAnchor',
-      count: topBarCount * 2, color: '#8E44AD',
-      totalLen: topPieceLen, anchorLen: topAncLen, bodyLen: topLn4, hookLen: topHookLen, bendDir: 'down',
-    });
-
-    // 分布筋
-    const distLen = p.flightWidth - 2 * cover;
-    const distCountPerLayer = Math.floor((botFlatLen + slopeLen) / distR.spacing);
-    shapes.push({
-      name: '分布筋', spec: p.distBar, shapeType: 'straight',
-      count: distCountPerLayer * 2, color: '#27AE60',
-      totalLen: distLen, bodyLen: distLen,
-    });
-  } else {
-    // ── AT型 ──
-    const botAncHoriz = Math.max(beamB / 2, bot5d);
-    const botAncSlope = Math.round(botAncHoriz / cosA);
-    const topAncSlope = Math.round((beamB - cover) / cosA);
-    const topHook = 15 * topR.diameter;
-    const topLn4 = Math.round(slopeLen / 4);
-    const distCountPerLayer = Math.floor(slopeLen / distR.spacing);
-
-    const botBodyLen = Math.round(slopeLen);
-    const botTotalLen = botBodyLen + botAncSlope * 2;
-    shapes.push({
-      name: '下部纵筋', spec: p.bottomBar, shapeType: 'straight',
-      count: botBarCount, color: '#C0392B',
-      totalLen: botTotalLen, bodyLen: botBodyLen, anchorLen: botAncSlope,
-    });
-
-    const topPieceLen = topAncSlope + topLn4 + topHook;
-    shapes.push({
-      name: '上部纵筋', spec: p.topBar, shapeType: 'bentAnchor',
-      count: topBarCount * 2, color: '#8E44AD',
-      totalLen: topPieceLen, anchorLen: topAncSlope, bodyLen: topLn4, hookLen: topHook, bendDir: 'down',
-    });
-
-    const distLen = p.flightWidth - 2 * cover;
-    shapes.push({
-      name: '分布筋', spec: p.distBar, shapeType: 'straight',
-      count: distCountPerLayer * 2, color: '#27AE60',
-      totalLen: distLen, bodyLen: distLen,
-    });
-  }
-
+  const layout=stairReinforcement(p);
+  const shapes:BarShape[]=[{name:'下部纵筋',spec:p.bottomBar,shapeType:'straight',count:layout.botBarZs.length,color:'#C0392B',totalLen:layout.bottomCurve.getLength()*1000,bodyLen:layout.bottomCurve.getLength()*1000}];
+  layout.topCurves.forEach((curve,i)=>{
+    const points=i?layout.topBarPaths.high:layout.topBarPaths.low;
+    const a=i?points[points.length-2]:points[0],b=i?points[points.length-1]:points[1];
+    const hook=a.distanceTo(b)*1000,totalLen=curve.getLength()*1000;
+    shapes.push({name:`上部纵筋（${i?'高':'低'}端）`,spec:p.topBar,shapeType:'support',count:layout.topBarZs.length,color:'#8E44AD',totalLen,bodyLen:totalLen-hook,hookLen:hook,bendDir:'down'});
+  });
+  shapes.push({name:'分布筋',spec:p.distBar,shapeType:'straight',count:layout.distBarPositions.length*2,color:'#27AE60',totalLen:layout.distLengthM*1000,bodyLen:layout.distLengthM*1000});
   return shapes;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// 条形基础 (TJ) — 钢筋用量计算
-// ═══════════════════════════════════════════════════════════════════
 
 export function calcStripFoundation(p: StripFoundationParams): CalcResult {
   const items: CalcItem[] = [];
   let total = 0;
   const cover = p.cover || 40;
+  const jlEnds=overhangs(p.jlEndType,p.jlOverhangSide,p.jlOverhang);
+  const jclEnds=overhangs(p.jclEndType,p.jclOverhangSide,p.jclOverhang);
+  const jlLength=p.length+jlEnds[0]+jlEnds[1],jclLength=p.width+jclEnds[0]+jclEnds[1];
+  const jclCount=p.hasJcl?(p.jclSpacing && p.jclSpacing>0 ? p.jclCount||1 : 1):0;
 
   function push(
     name: string,
@@ -1618,11 +1122,22 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
     total += weightKg;
   }
 
+  const beamBottomAverage=(bar:ReturnType<typeof parseRebar>,topSpec:string|undefined,stirSpec:string|undefined,width:number,length:number,endType:string|undefined,side:string|undefined)=>{
+    const stirD=stirSpec?parseStirrup(stirSpec).diameter:0,topD=topSpec?parseRebar(topSpec).diameter:0;
+    const usable=Math.max(width-2*cover-2*stirD-Math.max(bar.diameter,topD),0)/1000;
+    const firstCount=resolveBarRowCounts(bar,usable)[0]||0,bend=Math.max(12*bar.diameter,120)/1000;
+    const left=endType==='bothSides'||endType==='oneSide'&&side==='left'?bend:0;
+    const right=endType==='bothSides'||endType==='oneSide'&&side!=='left'?bend:0;
+    const body=Math.max(length-2*cover,0)/1000;
+    const full=bentHorizontalCurve(-body/2,body/2,0,bar.diameter,left,right).getLength();
+    return bar.count?(full*firstCount+body*(bar.count-firstCount))/bar.count:0;
+  };
+  const bottomStations=stripTransverseStations(p,'bottom'),topStations=stripTransverseStations(p,'top');
   const bottom = parseSlabRebar(p.bottomBar);
   const dist = parseSlabRebar(p.distBar);
 
   const bottomLen = Math.max((p.width - 2 * cover) / 1000, 0);
-  const bottomCount = Math.max(Math.floor((p.length - 2 * cover) / bottom.spacing) + 1, 1);
+  const bottomCount = bottomStations.base.length;
   push(
     '底部横向受力筋',
     p.bottomBar,
@@ -1634,12 +1149,12 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
     '#C0392B',
     [
       { label: '单根长度', formula: 'L = b - 2c', substitution: `= ${p.width} - 2×${cover}`, result: `= ${Math.max(p.width - 2 * cover, 0)} mm` },
-      { label: '根数', formula: 'n = (l - 2c) / s + 1', substitution: `= (${p.length} - 2×${cover}) / ${bottom.spacing} + 1`, result: `= ${bottomCount}` },
+      { label: '范围外原配筋根数', formula: '原始站位数 − 原位替换范围内撤掉的站位数', substitution: '仅对应受力筋被替换，分布筋保留', result: `= ${bottomCount}` },
     ],
   );
 
   const distLen = Math.max((p.length - 2 * cover) / 1000, 0);
-  const distCount = Math.max(Math.floor((p.width - 2 * cover) / dist.spacing) + 1, 1);
+  const distCount = stripDistributedPositions(p).length;
   push(
     '底部分布筋',
     p.distBar,
@@ -1651,7 +1166,7 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
     '#2980B9',
     [
       { label: '单根长度', formula: 'L = l - 2c', substitution: `= ${p.length} - 2×${cover}`, result: `= ${Math.max(p.length - 2 * cover, 0)} mm` },
-      { label: '根数', formula: 'n = (b - 2c) / s + 1', substitution: `= (${p.width} - 2×${cover}) / ${dist.spacing} + 1`, result: `= ${distCount}` },
+      { label: '根数', formula: '按底板实际站位统计，扣除基础梁支承带内未绘制的分布筋', substitution: `宽度 ${p.width}mm，间距 ${dist.spacing}mm`, result: `= ${distCount}` },
     ],
   );
 
@@ -1662,7 +1177,7 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
   if (p.supportCount === 2 && p.topBar && clearGap > 0) {
     const top = parseSlabRebar(p.topBar);
     const topLen = Math.max(clearGap / 1000, 0);
-    const topCount = Math.max(Math.floor((p.length - 2 * cover) / top.spacing) + 1, 1);
+    const topCount = topStations.base.length;
     push(
       '顶部横向受力筋',
       p.topBar,
@@ -1674,7 +1189,7 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
       '#E67E22',
       [
         { label: '净跨长度（两梁/两墙内边间）', formula: 'L = s - bw', substitution: `= ${p.supportSpacing} - ${p.supportWidth}`, result: `= ${clearGap} mm` },
-        { label: '根数', formula: 'n = (l - 2c) / s + 1', substitution: `= (${p.length} - 2×${cover}) / ${top.spacing} + 1`, result: `= ${topCount}` },
+        { label: '范围外原配筋根数', formula: '原始站位数 − 原位替换范围内撤掉的站位数', substitution: '仅对应顶筋被替换', result: `= ${topCount}` },
       ],
     );
   }
@@ -1701,18 +1216,18 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
 
   if (p.supportType === 'beam' && p.jlBottom) {
     const jlBottom = parseRebar(p.jlBottom);
-    const jlBottomLen = Math.max((p.length - 2 * cover) / 1000, 0);
+    const jlBottomLen = beamBottomAverage(jlBottom,p.jlTop,p.jlStirrup,p.supportWidth,jlLength,p.jlEndType,p.jlOverhangSide);
     push(
       'JL底部纵筋',
       p.jlBottom,
-      `${jlBottomLen.toFixed(2)}m × ${jlBottom.count * p.supportCount}`,
+      `平均${jlBottomLen.toFixed(3)}m × ${jlBottom.count * p.supportCount}`,
       jlBottom.grade,
       jlBottom.diameter,
       jlBottom.count * p.supportCount,
       jlBottomLen,
       '#8B4513',
       [
-        { label: '单根长度', formula: 'L = l - 2c', substitution: `= ${p.length} - 2×${cover}`, result: `= ${Math.max(p.length - 2 * cover, 0)} mm` },
+        { label: '平均单根中心线长度', formula: '首排计完整端弯圆弧，其余排计通长直段；按根数加权', substitution: '含基础梁实际外伸段', result: `= ${(jlBottomLen*1000).toFixed(1)} mm` },
         { label: '总根数', formula: 'n = 每道梁纵筋根数 × 梁道数', substitution: `= ${jlBottom.count} × ${p.supportCount}`, result: `= ${jlBottom.count * p.supportCount}` },
       ],
     );
@@ -1720,7 +1235,7 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
 
   if (p.supportType === 'beam' && p.jlTop) {
     const jlTop = parseRebar(p.jlTop);
-    const jlTopLen = Math.max((p.length - 2 * cover) / 1000, 0);
+    const jlTopLen = Math.max((jlLength - 2 * cover) / 1000, 0);
     push(
       'JL顶部纵筋',
       p.jlTop,
@@ -1731,88 +1246,73 @@ export function calcStripFoundation(p: StripFoundationParams): CalcResult {
       jlTopLen,
       '#C97B36',
       [
-        { label: '单根长度', formula: 'L = l - 2c', substitution: `= ${p.length} - 2×${cover}`, result: `= ${Math.max(p.length - 2 * cover, 0)} mm` },
+        { label: '单根长度', formula: 'L = 基础梁含外伸总长 - 2c', substitution: `= ${jlLength} - 2×${cover}`, result: `= ${Math.max(jlLength - 2 * cover, 0)} mm` },
         { label: '总根数', formula: 'n = 每道梁纵筋根数 × 梁道数', substitution: `= ${jlTop.count} × ${p.supportCount}`, result: `= ${jlTop.count * p.supportCount}` },
       ],
     );
   }
 
-  if (p.supportType === 'beam' && p.jlStirrup) {
-    const stir = parseStirrup(p.jlStirrup);
-    const stirrupCountPerBeam = Math.max(Math.floor((p.length - 2 * cover) / Math.min(stir.spacingDense, stir.spacingNormal)) + 1, 2);
-    const stirrupPerimeter = (2 * (p.supportWidth - 2 * cover) + 2 * (p.supportHeight - 2 * cover)) / 1000;
-    push(
-      'JL箍筋',
-      p.jlStirrup,
-      `${stirrupPerimeter.toFixed(2)}m × ${stirrupCountPerBeam * p.supportCount}`,
-      stir.grade,
-      stir.diameter,
-      stirrupCountPerBeam * p.supportCount,
-      Math.max(stirrupPerimeter, 0),
-      '#2E8B57',
-      [
-        { label: '单个箍筋长度(简化)', formula: 'L ≈ 2(b-2c) + 2(h-2c)', substitution: `= 2×(${p.supportWidth}-${2 * cover}) + 2×(${p.supportHeight}-${2 * cover})`, result: `= ${Math.max((2 * (p.supportWidth - 2 * cover) + 2 * (p.supportHeight - 2 * cover)), 0)} mm` },
-        { label: '总个数', formula: 'n = 每道梁箍筋个数 × 梁道数', substitution: `= ${stirrupCountPerBeam} × ${p.supportCount}`, result: `= ${stirrupCountPerBeam * p.supportCount}` },
-      ],
-    );
-  }
+  const addHoops=(name:string,spec:string,width:number,height:number,length:number,beams:number)=>{
+    const stir=parseStirrup(spec),spacing=Math.min(stir.spacingDense,stir.spacingNormal);
+    const stations=Math.max(Math.floor((length-2*cover)/spacing)+1,1);
+    const shape=createCompositeStirrupSpec({widthMm:Math.max(width-2*cover-stir.diameter,width*.2),heightMm:Math.max(height-2*cover-stir.diameter,height*.2),diameterMm:stir.diameter,legs:stir.legs});
+    const count=stations*beams*shape.pieceCount,avg=shape.lengthMm/shape.pieceCount/1000;
+    push(name,spec,`平均${avg.toFixed(3)}m × ${count}个独立箍`,stir.grade,stir.diameter,count,avg,'#2E8B57',[
+      {label:'每道总展开长',formula:'Σ每个独立箍的直段、圆弧与135°弯钩',substitution:shape.hoops.map(q=>`${q.lengthMm}mm`).join(' + '),result:`${shape.lengthMm} mm/道`},
+      {label:'独立箍总个数',formula:'每梁实布站位 × 梁道数 × 每道独立箍数',substitution:`${stations} × ${beams} × ${shape.pieceCount}`,result:`${count} 个`},
+    ]);
+  };
+  if(p.supportType==='beam'&&p.jlStirrup)addHoops('JL箍筋',p.jlStirrup,p.supportWidth,p.supportHeight,jlLength,p.supportCount);
 
-  if (p.hasJcl && p.jclCount && p.jclCount > 0) {
+  if (p.hasJcl && jclCount > 0) {
     if (p.jclBottom) {
       const jclBottom = parseRebar(p.jclBottom);
-      const jclLen = Math.max((p.width - 2 * cover) / 1000, 0);
+      const jclLen = beamBottomAverage(jclBottom,p.jclTop,p.jclStirrup,p.jclB||0,jclLength,p.jclEndType,p.jclOverhangSide);
       push(
         'JCL底部纵筋',
         p.jclBottom,
-        `${jclLen.toFixed(2)}m × ${jclBottom.count * p.jclCount}`,
+        `平均${jclLen.toFixed(3)}m × ${jclBottom.count * jclCount}`,
         jclBottom.grade,
         jclBottom.diameter,
-        jclBottom.count * p.jclCount,
+        jclBottom.count * jclCount,
         jclLen,
         '#6B3F2A',
         [
-          { label: '单根长度', formula: 'L = b - 2c', substitution: `= ${p.width} - 2×${cover}`, result: `= ${Math.max(p.width - 2 * cover, 0)} mm` },
-          { label: '总根数', formula: 'n = 每道次梁纵筋根数 × 次梁道数', substitution: `= ${jclBottom.count} × ${p.jclCount}`, result: `= ${jclBottom.count * p.jclCount}` },
+          { label: '平均单根中心线长度', formula: '首排计完整端弯圆弧，其余排计通长直段；按根数加权', substitution: '含基础梁实际外伸段', result: `= ${(jclLen*1000).toFixed(1)} mm` },
+          { label: '总根数', formula: 'n = 每道次梁纵筋根数 × 次梁道数', substitution: `= ${jclBottom.count} × ${jclCount}`, result: `= ${jclBottom.count * jclCount}` },
         ],
       );
     }
     if (p.jclTop) {
       const jclTop = parseRebar(p.jclTop);
-      const jclLen = Math.max((p.width - 2 * cover) / 1000, 0);
+      const jclLen = Math.max((jclLength - 2 * cover) / 1000, 0);
       push(
         'JCL顶部纵筋',
         p.jclTop,
-        `${jclLen.toFixed(2)}m × ${jclTop.count * p.jclCount}`,
+        `${jclLen.toFixed(2)}m × ${jclTop.count * jclCount}`,
         jclTop.grade,
         jclTop.diameter,
-        jclTop.count * p.jclCount,
+        jclTop.count * jclCount,
         jclLen,
         '#B66A2B',
         [
-          { label: '单根长度', formula: 'L = b - 2c', substitution: `= ${p.width} - 2×${cover}`, result: `= ${Math.max(p.width - 2 * cover, 0)} mm` },
-          { label: '总根数', formula: 'n = 每道次梁纵筋根数 × 次梁道数', substitution: `= ${jclTop.count} × ${p.jclCount}`, result: `= ${jclTop.count * p.jclCount}` },
+          { label: '单根长度', formula: 'L = 次梁含外伸总长 - 2c', substitution: `= ${jclLength} - 2×${cover}`, result: `= ${Math.max(jclLength - 2 * cover, 0)} mm` },
+          { label: '总根数', formula: 'n = 每道次梁纵筋根数 × 次梁道数', substitution: `= ${jclTop.count} × ${jclCount}`, result: `= ${jclTop.count * jclCount}` },
         ],
       );
     }
-    if (p.jclStirrup && p.jclB && p.jclH) {
-      const stir = parseStirrup(p.jclStirrup);
-      const stirrupCountPerBeam = Math.max(Math.floor((p.width - 2 * cover) / Math.min(stir.spacingDense, stir.spacingNormal)) + 1, 2);
-      const stirrupPerimeter = (2 * (p.jclB - 2 * cover) + 2 * (p.jclH - 2 * cover)) / 1000;
-      push(
-        'JCL箍筋',
-        p.jclStirrup,
-        `${stirrupPerimeter.toFixed(2)}m × ${stirrupCountPerBeam * p.jclCount}`,
-        stir.grade,
-        stir.diameter,
-        stirrupCountPerBeam * p.jclCount,
-        Math.max(stirrupPerimeter, 0),
-        '#3B8F6A',
-        [
-          { label: '单个箍筋长度(简化)', formula: 'L ≈ 2(b-2c) + 2(h-2c)', substitution: `= 2×(${p.jclB}-${2 * cover}) + 2×(${p.jclH}-${2 * cover})`, result: `= ${Math.max((2 * (p.jclB - 2 * cover) + 2 * (p.jclH - 2 * cover)), 0)} mm` },
-          { label: '总个数', formula: 'n = 每道次梁箍筋个数 × 次梁道数', substitution: `= ${stirrupCountPerBeam} × ${p.jclCount}`, result: `= ${stirrupCountPerBeam * p.jclCount}` },
-        ],
-      );
-    }
+    if(p.jclStirrup&&p.jclB&&p.jclH)addHoops('JCL箍筋',p.jclStirrup,p.jclB,p.jclH,jclLength,jclCount);
+  }
+
+  for(const [name,spec,stations,lengthM,color] of [
+    ['原位修正底筋',p.localBottomBar,bottomStations,bottomLen,'#EC4899'],
+    ['原位修正顶筋',p.localTopBar,topStations,clearGap>0?clearGap/1000:bottomLen,'#D946EF'],
+  ] as const){
+    if(!spec||!stations.local.length)continue;
+    const bar=parseSlabRebar(spec);
+    push(name,spec,`${lengthM.toFixed(3)}m × ${stations.local.length}根（替换对应范围原配筋）`,bar.grade,bar.diameter,stations.local.length,lengthM,color,[
+      {label:'原位替换范围',formula:'裁剪到实际保护层范围内；撤掉原站位后按原位间距重布',substitution:`${stations.rangeStart.toFixed(1)} ~ ${stations.rangeEnd.toFixed(1)}mm`,result:`${stations.local.length} 根，不与原配筋重复累计`},
+    ]);
   }
 
   return buildResult(items, total, 'stripfoundation');
@@ -1836,25 +1336,43 @@ export function calcFoundation(p: FoundationParams): CalcResult {
 
   // X 向底筋: 沿 Y 向铺设，长度 = by - 2*cover
   const barX = parseSlabRebar(p.bottomBarX);
-  const barXLen = (p.by - 2 * cover) / 1000;
-  const barXCount = Math.floor((p.bx - 2 * cover) / barX.spacing) + 1;
+  const barXBend = (p.by-p.colBy)/2 < calcLaTable(barX.grade,barX.diameter,p.concreteGrade) ? 12*barX.diameter : 0;
+  const barXBody = Math.max(0,p.by-2*cover-barX.diameter);
+  const barXCurve = bentHorizontalCurve(-barXBody*.0005,barXBody*.0005,0,barX.diameter,barXBend*.001);
+  const barXLen = barXCurve.getLength();
+  const barXCount = slabBarPositions(p.bx, cover, barX.diameter, barX.spacing).length;
   const barXFormula: FormulaStep[] = [
-    { label: '单根长度', formula: 'L = by - 2c', substitution: `= ${p.by} - 2×${cover}`, result: `= ${p.by - 2 * cover} mm` },
-    { label: '根数', formula: 'n = (bx - 2c) / s + 1', substitution: `= (${p.bx} - 2×${cover}) / ${barX.spacing} + 1`, result: `= ${barXCount}` },
+    { label: '单根长度', formula: 'L = 水平中心线 + 两端圆弧及弯脚', substitution: `水平段=${barXBody}mm，端弯=${barXBend}mm`, result: `= ${(barXLen*1000).toFixed(1)} mm` },
+    { label: '根数', formula: 'n = ⌊(bx - 2c - d) / s⌋ + 1', substitution: `= ⌊(${p.bx} - 2×${cover} - ${barX.diameter}) / ${barX.spacing}⌋ + 1`, result: `= ${barXCount}` },
   ];
-  push('X向底筋', p.bottomBarX, `${barXLen.toFixed(2)}m × ${barXCount}`,
-    barX.grade, barX.diameter, barXCount, barXLen, '#C0392B', barXFormula);
+  const barXShortCount = p.shortenBottomBarX && p.by >= 2500 ? Math.floor(barXCount/2) : 0;
+  barXFormula[1] = { label:'全长筋根数',formula:'n全长 = n实布 - n减短',substitution:`${barXCount} - ${barXShortCount}`,result:`${barXCount-barXShortCount} 根` };
+  push('X向底筋', p.bottomBarX, `${barXLen.toFixed(3)}m × ${barXCount-barXShortCount}`,
+    barX.grade,barX.diameter,barXCount-barXShortCount,barXLen,'#C0392B',barXFormula);
+  if(barXShortCount) {
+    const shortLen=bentHorizontalCurve(-barXBody*.00045,barXBody*.00045,0,barX.diameter,barXBend*.001).getLength();
+    push('X向底筋（减短）',p.bottomBarX,`${shortLen.toFixed(3)}m × ${barXShortCount}`,barX.grade,barX.diameter,barXShortCount,shortLen,'#C0392B');
+  }
 
   // Y 向底筋: 沿 X 向铺设，长度 = bx - 2*cover
   const barY = parseSlabRebar(p.bottomBarY);
-  const barYLen = (p.bx - 2 * cover) / 1000;
-  const barYCount = Math.floor((p.by - 2 * cover) / barY.spacing) + 1;
+  const barYBend = (p.bx-p.colBx)/2 < calcLaTable(barY.grade,barY.diameter,p.concreteGrade) ? 12*barY.diameter : 0;
+  const barYBody = Math.max(0,p.bx-2*cover-barY.diameter);
+  const barYCurve = bentHorizontalCurve(-barYBody*.0005,barYBody*.0005,0,barY.diameter,barYBend*.001);
+  const barYLen = barYCurve.getLength();
+  const barYCount = slabBarPositions(p.by, cover, barY.diameter, barY.spacing).length;
   const barYFormula: FormulaStep[] = [
-    { label: '单根长度', formula: 'L = bx - 2c', substitution: `= ${p.bx} - 2×${cover}`, result: `= ${p.bx - 2 * cover} mm` },
-    { label: '根数', formula: 'n = (by - 2c) / s + 1', substitution: `= (${p.by} - 2×${cover}) / ${barY.spacing} + 1`, result: `= ${barYCount}` },
+    { label: '单根长度', formula: 'L = 水平中心线 + 两端圆弧及弯脚', substitution: `水平段=${barYBody}mm，端弯=${barYBend}mm`, result: `= ${(barYLen*1000).toFixed(1)} mm` },
+    { label: '根数', formula: 'n = ⌊(by - 2c - d) / s⌋ + 1', substitution: `= ⌊(${p.by} - 2×${cover} - ${barY.diameter}) / ${barY.spacing}⌋ + 1`, result: `= ${barYCount}` },
   ];
-  push('Y向底筋', p.bottomBarY, `${barYLen.toFixed(2)}m × ${barYCount}`,
-    barY.grade, barY.diameter, barYCount, barYLen, '#2980B9', barYFormula);
+  const barYShortCount = p.shortenBottomBarY && p.bx >= 2500 ? Math.floor(barYCount/2) : 0;
+  barYFormula[1] = { label:'全长筋根数',formula:'n全长 = n实布 - n减短',substitution:`${barYCount} - ${barYShortCount}`,result:`${barYCount-barYShortCount} 根` };
+  push('Y向底筋', p.bottomBarY, `${barYLen.toFixed(3)}m × ${barYCount-barYShortCount}`,
+    barY.grade,barY.diameter,barYCount-barYShortCount,barYLen,'#2980B9',barYFormula);
+  if(barYShortCount) {
+    const shortLen=bentHorizontalCurve(-barYBody*.00045,barYBody*.00045,0,barY.diameter,barYBend*.001).getLength();
+    push('Y向底筋（减短）',p.bottomBarY,`${shortLen.toFixed(3)}m × ${barYShortCount}`,barY.grade,barY.diameter,barYShortCount,shortLen,'#2980B9');
+  }
 
   // 柱插筋: 按 22G101-3 判定直锚/弯锚
   if (p.colMain) {
@@ -1867,7 +1385,8 @@ export function calcFoundation(p: FoundationParams): CalcResult {
     const fAnchorInFound = fAnchor.canStraight
       ? p.h - cover
       : fAnchor.straightPortion + fAnchor.bendLength;
-    const insertLen = (fAnchorInFound + fLlE) / 1000;
+    const insertSpec = foundationInsertSpec(p.h, cover, colR.diameter, barX.diameter, barY.diameter, colR.grade, p.concreteGrade, fSeismic);
+    const insertLen = insertSpec.lengthMm / 1000;
     const colFormula: FormulaStep[] = [
       { label: '锚固判定', formula: fAnchor.canStraight ? '可用深度 ≥ laE → 直锚' : '可用深度 < laE → 弯锚',
         substitution: `可用=${p.h - cover}mm, laE=${fLaE}mm`, result: `→ ${fAnchor.anchorType === 'straight' ? '直锚' : '弯锚'} (场景${fAnchor.scenario})` },
@@ -1879,6 +1398,11 @@ export function calcFoundation(p: FoundationParams): CalcResult {
     if (colCount === 2) {
       colFormula.push({ label: '柱数', formula: 'n柱 = 2', substitution: '', result: `每柱${colR.count}根，共${colR.count * 2}根` });
     }
+    colFormula.splice(1, colFormula.length - 1,
+      { label: '模型底弯标高', formula: 'y = c + dX + dY + d柱/2 + 2', substitution: `= ${insertSpec.footYmm.toFixed(1)}`, result: 'mm（避让底部网片）' },
+      { label: '竖向段与搭接', formula: 'Lv = H + llE - y', substitution: `= ${insertSpec.topYmm} - ${insertSpec.footYmm}`, result: `${(insertSpec.topYmm - insertSpec.footYmm).toFixed(1)} mm` },
+      { label: '连续弯脚', formula: 'L = Lv + 弯脚 - (2 - π/2)R', substitution: `R=${insertSpec.radiusMm} mm，弯脚=${insertSpec.anchor.bendLength} mm`, result: `${insertSpec.lengthMm.toFixed(1)} mm（中心线展开）` },
+    );
     push('柱插筋', p.colMain, `${insertLen.toFixed(2)}m × ${colR.count * colCount} (${fAnchor.anchorType === 'straight' ? '直锚' : '弯锚'})`,
       colR.grade, colR.diameter, colR.count * colCount, insertLen, '#8E44AD', colFormula);
   }
@@ -1887,11 +1411,12 @@ export function calcFoundation(p: FoundationParams): CalcResult {
   if ((p.columnCount || 1) === 2 && p.topBarX && p.colSpacing) {
     const topX = parseSlabRebar(p.topBarX);
     // 纵向受力钢筋: 沿 X 向铺设，长度 = 柱间距 + 2 * (柱外缘到基础边缘距离)
-    const topXLen = (p.bx - 2 * cover) / 1000;
-    const topXCount = Math.floor((p.by - 2 * cover) / topX.spacing) + 1;
+    const bandWidth = Math.min(p.topBandWidth || Math.max(p.colBy * 2,1200),p.by-2*cover);
+    const topXLen = (p.colSpacing + p.colBx) / 1000;
+    const topXCount = p.topBarXCount && p.topBarXCount > 0 ? p.topBarXCount : Math.floor(bandWidth / topX.spacing) + 1;
     const topXFormula: FormulaStep[] = [
-      { label: '单根长度', formula: 'L = bx - 2c', substitution: `= ${p.bx} - 2×${cover}`, result: `= ${p.bx - 2 * cover} mm` },
-      { label: '根数', formula: 'n = (by - 2c) / s + 1', substitution: `= (${p.by} - 2×${cover}) / ${topX.spacing} + 1`, result: `= ${topXCount}` },
+      { label: '单根长度', formula: 'L = 柱间距 + 柱宽', substitution: `${p.colSpacing} + ${p.colBx}`, result: `= ${(topXLen*1000).toFixed(1)} mm` },
+      { label: '根数', formula: '显式根数 / 柱间带按间距布置', substitution: `带宽=${bandWidth}mm，间距=${topX.spacing}mm`, result: `= ${topXCount}` },
     ];
     push('顶部纵向筋', p.topBarX, `${topXLen.toFixed(2)}m × ${topXCount}`,
       topX.grade, topX.diameter, topXCount, topXLen, '#E67E22', topXFormula);
@@ -1901,16 +1426,34 @@ export function calcFoundation(p: FoundationParams): CalcResult {
   if ((p.columnCount || 1) === 2 && p.topBarY && p.colSpacing) {
     const topY = parseSlabRebar(p.topBarY);
     // 分布钢筋: 沿 Y 向铺设，长度 = by - 2*cover, 范围 = 柱间区域
-    const topYLen = (p.by - 2 * cover) / 1000;
+    const topYLen = Math.min(p.topBandWidth || Math.max(p.colBy * 2,1200),p.by-2*cover) / 1000;
     const topYCount = Math.floor((p.colSpacing - p.colBx) / topY.spacing) + 1;
     const topYFormula: FormulaStep[] = [
-      { label: '单根长度', formula: 'L = by - 2c', substitution: `= ${p.by} - 2×${cover}`, result: `= ${p.by - 2 * cover} mm` },
+      { label: '单根长度', formula: 'L = 柱间带实际宽度', substitution: `柱间带宽 ${topYLen*1000}mm`, result: `= ${(topYLen*1000).toFixed(1)} mm` },
       { label: '根数(柱间区域)', formula: 'n = (s - colBx) / s间距 + 1', substitution: `= (${p.colSpacing} - ${p.colBx}) / ${topY.spacing} + 1`, result: `= ${topYCount}` },
     ];
     push('顶部分布筋', p.topBarY, `${topYLen.toFixed(2)}m × ${topYCount}`,
       topY.grade, topY.diameter, topYCount, topYLen, '#27AE60', topYFormula);
   }
 
+  const beamLayout=foundationBeamReinforcement(p);
+  const beamGroups=new Map<string,typeof beamLayout.bars>();
+  for(const bar of beamLayout.bars) {
+    const key=`${bar.role}-${bar.row}-${bar.diameter}`;
+    beamGroups.set(key,[...(beamGroups.get(key)||[]),bar]);
+  }
+  for(const bars of beamGroups.values()) {
+    const bar=bars[0],name=`基础梁${bar.role==='top'?'顶':'底'}筋${bar.row?`（第${bar.row+1}排）`:''}`;
+    push(name,bar.role==='top'?(p.foundationBeamTop||'4C20'):(p.foundationBeamBottom||'4C22'),`${(bar.lengthMm/1000).toFixed(3)}m × ${bars.length}`,
+      bar.grade,bar.diameter,bars.length,bar.lengthMm/1000,bar.role==='top'?'#8E44AD':'#C0392B',
+      [{label:'连续钢筋中心线',formula:'L = 直段 + 弯脚 + 圆弧调整',substitution:'与三维同排钢筋路径一致',result:`${bar.lengthMm.toFixed(1)} mm`}]);
+  }
+  if(beamLayout.stirrupSpec) {
+    const stir=parseStirrup(p.foundationBeamStirrup||'A10@150(4)');
+    for(const [i,hoop] of beamLayout.stirrupSpec.hoops.entries()) push(`基础梁${i?'内箍'+i:'外箍'}`,p.foundationBeamStirrup||'A10@150(4)',
+      `${(hoop.lengthMm/1000).toFixed(3)}m × ${beamLayout.stirrupPositions.length}`,stir.grade,stir.diameter,
+      beamLayout.stirrupPositions.length,hoop.lengthMm/1000,'#27AE60');
+  }
   return buildResult(items, total, 'foundation');
 }
 
@@ -1932,22 +1475,28 @@ export function calcPileCap(p: PileCapParams): CalcResult {
 
   // X 向底筋: 沿 Y 向铺设，长度 = by - 2*cover
   const barX = parseSlabRebar(p.bottomBarX);
-  const barXLen = (p.by - 2 * cover) / 1000;
-  const barXCount = Math.floor((p.bx - 2 * cover) / barX.spacing) + 1;
+  const barXBend = determinePileCapRebarEnd(barX.diameter, 'round', p.pileDiameter, p.by/2-cover).bendLen * (determinePileCapRebarEnd(barX.diameter, 'round', p.pileDiameter, p.by/2-cover).needBend ? 1 : 0);
+  const barXBody = Math.max(0,p.by-2*cover-barX.diameter);
+  const barXCurve = bentHorizontalCurve(-barXBody*.0005,barXBody*.0005,0,barX.diameter,barXBend*.001);
+  const barXLen = barXCurve.getLength();
+  const barXCount = slabBarPositions(p.bx, cover, barX.diameter, barX.spacing).length;
   const barXFormula: FormulaStep[] = [
-    { label: '单根长度', formula: 'L = by - 2c', substitution: `= ${p.by} - 2×${cover}`, result: `= ${p.by - 2 * cover} mm` },
-    { label: '根数', formula: 'n = (bx - 2c) / s + 1', substitution: `= (${p.bx} - 2×${cover}) / ${barX.spacing} + 1`, result: `= ${barXCount}` },
+    { label: '单根长度', formula: 'L = 水平中心线 + 两端圆弧及弯脚', substitution: `水平段=${barXBody}mm，端弯=${barXBend}mm`, result: `= ${(barXLen*1000).toFixed(1)} mm` },
+    { label: '根数', formula: 'n = ⌊(bx - 2c - d) / s⌋ + 1', substitution: `= ⌊(${p.bx} - 2×${cover} - ${barX.diameter}) / ${barX.spacing}⌋ + 1`, result: `= ${barXCount}` },
   ];
   pushItem('X向底筋', p.bottomBarX, `${barXLen.toFixed(2)}m × ${barXCount}`,
     barX.grade, barX.diameter, barXCount, barXLen, '#C0392B', barXFormula);
 
   // Y 向底筋: 沿 X 向铺设，长度 = bx - 2*cover
   const barY = parseSlabRebar(p.bottomBarY);
-  const barYLen = (p.bx - 2 * cover) / 1000;
-  const barYCount = Math.floor((p.by - 2 * cover) / barY.spacing) + 1;
+  const barYBend = determinePileCapRebarEnd(barY.diameter, 'round', p.pileDiameter, p.bx/2-cover).bendLen * (determinePileCapRebarEnd(barY.diameter, 'round', p.pileDiameter, p.bx/2-cover).needBend ? 1 : 0);
+  const barYBody = Math.max(0,p.bx-2*cover-barY.diameter);
+  const barYCurve = bentHorizontalCurve(-barYBody*.0005,barYBody*.0005,0,barY.diameter,barYBend*.001);
+  const barYLen = barYCurve.getLength();
+  const barYCount = slabBarPositions(p.by, cover, barY.diameter, barY.spacing).length;
   const barYFormula: FormulaStep[] = [
-    { label: '单根长度', formula: 'L = bx - 2c', substitution: `= ${p.bx} - 2×${cover}`, result: `= ${p.bx - 2 * cover} mm` },
-    { label: '根数', formula: 'n = (by - 2c) / s + 1', substitution: `= (${p.by} - 2×${cover}) / ${barY.spacing} + 1`, result: `= ${barYCount}` },
+    { label: '单根长度', formula: 'L = 水平中心线 + 两端圆弧及弯脚', substitution: `水平段=${barYBody}mm，端弯=${barYBend}mm`, result: `= ${(barYLen*1000).toFixed(1)} mm` },
+    { label: '根数', formula: 'n = ⌊(by - 2c - d) / s⌋ + 1', substitution: `= ⌊(${p.by} - 2×${cover} - ${barY.diameter}) / ${barY.spacing}⌋ + 1`, result: `= ${barYCount}` },
   ];
   pushItem('Y向底筋', p.bottomBarY, `${barYLen.toFixed(2)}m × ${barYCount}`,
     barY.grade, barY.diameter, barYCount, barYLen, '#2980B9', barYFormula);
@@ -1963,7 +1512,8 @@ export function calcPileCap(p: PileCapParams): CalcResult {
     const anchorInCap = anchorInfo.canStraight
       ? p.h - cover                      // 直锚: 从顶面到底保护层
       : anchorInfo.straightPortion + anchorInfo.bendLength; // 弯锚: 直段+弯折
-    const insertLen = (anchorInCap + llE) / 1000;
+    const insertSpec = foundationInsertSpec(p.h, cover, colR.diameter, barX.diameter, barY.diameter, colR.grade, p.concreteGrade, seismic);
+    const insertLen = insertSpec.lengthMm / 1000;
     const colFormula: FormulaStep[] = [
       ...anchorSteps(colR.grade, colR.diameter, p.concreteGrade, seismic),
       { label: '锚固判定', formula: anchorInfo.canStraight ? '可用深度 ≥ laE → 直锚' : '可用深度 < laE → 弯锚',
@@ -1974,6 +1524,11 @@ export function calcPileCap(p: PileCapParams): CalcResult {
       { label: '搭接长度 llE', formula: 'llE = ζl × laE', substitution: `= 1.4 × ${laE}`, result: `= ${llE} mm` },
       { label: '插筋总长', formula: 'L = L_cap + llE', substitution: `= ${anchorInCap} + ${llE}`, result: `= ${anchorInCap + llE} mm = ${insertLen.toFixed(2)} m` },
     ];
+    colFormula.splice(1, colFormula.length - 1,
+      { label: '模型底弯标高', formula: 'y = c + dX + dY + d柱/2 + 2', substitution: `= ${insertSpec.footYmm.toFixed(1)}`, result: 'mm（避让底部网片）' },
+      { label: '竖向段与搭接', formula: 'Lv = H + llE - y', substitution: `= ${insertSpec.topYmm} - ${insertSpec.footYmm}`, result: `${(insertSpec.topYmm - insertSpec.footYmm).toFixed(1)} mm` },
+      { label: '连续弯脚', formula: 'L = Lv + 弯脚 - (2 - π/2)R', substitution: `R=${insertSpec.radiusMm} mm，弯脚=${insertSpec.anchor.bendLength} mm`, result: `${insertSpec.lengthMm.toFixed(1)} mm（中心线展开）` },
+    );
     pushItem('柱插筋', p.colMain, `${insertLen.toFixed(2)}m × ${colR.count} (${anchorInfo.anchorType === 'straight' ? '直锚' : '弯锚'})`,
       colR.grade, colR.diameter, colR.count, insertLen, '#8E44AD', colFormula);
   }
@@ -2049,7 +1604,8 @@ export function calcRaft(p: RaftFoundationParams): CalcResult {
     const raftAnchorInFound = raftAnchor.canStraight
       ? foundH - cover
       : raftAnchor.straightPortion + raftAnchor.bendLength;
-    const insertLen = (raftAnchorInFound + raftLlE) / 1000;
+    const insertSpec = foundationInsertSpec(foundH, cover, colR.diameter, botX.diameter, botY.diameter, colR.grade, p.concreteGrade, seismic, p.raftType==='beamSlab'?raftBeamArrangement(p).minFootSurfaceMm:0);
+    const insertLen = insertSpec.lengthMm / 1000;
     const colFormula: FormulaStep[] = [
       { label: '锚固判定', formula: raftAnchor.canStraight ? '可用深度 ≥ laE → 直锚' : '可用深度 < laE → 弯锚',
         substitution: `可用=${foundH - cover}mm, laE=${raftLaE}mm`, result: `→ ${raftAnchor.anchorType === 'straight' ? '直锚' : '弯锚'} (场景${raftAnchor.scenario})` },
@@ -2059,14 +1615,17 @@ export function calcRaft(p: RaftFoundationParams): CalcResult {
       { label: '搭接 llE', formula: 'llE = 1.4 × laE', substitution: `= 1.4 × ${raftLaE}`, result: `= ${raftLlE} mm` },
       { label: '柱数', formula: 'n柱 = colCountX × colCountY', substitution: `= ${p.colCountX} × ${p.colCountY}`, result: `= ${colTotal}` },
     ];
+    colFormula.splice(1, colFormula.length - 1,
+      { label: '模型底弯标高', formula: 'y = c + dX + dY + d柱/2 + 2', substitution: `= ${insertSpec.footYmm.toFixed(1)}`, result: 'mm（避让底部网片）' },
+      { label: '竖向段与搭接', formula: 'Lv = H + llE - y', substitution: `= ${insertSpec.topYmm} - ${insertSpec.footYmm}`, result: `${(insertSpec.topYmm - insertSpec.footYmm).toFixed(1)} mm` },
+      { label: '连续弯脚', formula: 'L = Lv + 弯脚 - (2 - π/2)R', substitution: `R=${insertSpec.radiusMm} mm，弯脚=${insertSpec.anchor.bendLength} mm`, result: `${insertSpec.lengthMm.toFixed(1)} mm（中心线展开）` },
+    );
     push('柱插筋', p.colMain, `${insertLen.toFixed(2)}m × ${colR.count * colTotal} (${raftAnchor.anchorType === 'straight' ? '直锚' : '弯锚'})`,
       colR.grade, colR.diameter, colR.count * colTotal, insertLen, '#8E44AD', colFormula);
   }
 
   // ── 梁板式筏基 JL 基础梁钢筋 ──
   if (p.raftType === 'beamSlab') {
-    const beamH = p.beamH ?? 900;
-    const beamB = p.beamB ?? 600;
     // X方向基础梁 (沿lx, 共colCountY道) + Y方向基础梁 (沿ly, 共colCountX道)
     const xBeamLen = p.lx / 1000;
     const yBeamLen = p.ly / 1000;
@@ -2076,9 +1635,8 @@ export function calcRaft(p: RaftFoundationParams): CalcResult {
     if (p.beamBottom) {
       const bb = parseRebar(p.beamBottom);
       const botLen = xBeamLen;
-      const botCount = bb.count * totalXBeams + bb.count * totalYBeams;
       push('JL底部纵筋 (B)', p.beamBottom,
-        `${botLen.toFixed(2)}m × ${bb.count * totalXBeams} (X向) + ${yBeamLen.toFixed(2)}m × ${bb.count * totalYBeams} (Y向)`,
+        `${botLen.toFixed(2)}m × ${bb.count * totalXBeams} (仅X向，Y向另列)`,
         bb.grade, bb.diameter,
         bb.count * totalXBeams,
         botLen, '#C0392B');
@@ -2095,36 +1653,17 @@ export function calcRaft(p: RaftFoundationParams): CalcResult {
         bt.grade, bt.diameter, bt.count * totalYBeams, yBeamLen, '#E67E22');
     }
 
-    if (p.beamStirrup) {
-      const stir = parseStirrup(p.beamStirrup);
-      const innerBJL = beamB - 2 * cover;
-      const innerHJL = beamH - 2 * cover;
-      const stirCutMm = stirrupCutLength(innerBJL, innerHJL, stir.diameter, stir.legs);
-      const stirLenM = stirCutMm / 1000;
-      // 加密区: max(2h, 500mm) from each column face — 22G101
-      const jlDenseZone = beamDenseZoneLength(beamH);
-      // X 向基础梁: 柱间距 = lx / (colCountX-1)，每跨加密区+非加密区
-      const xSpanLen = p.colCountX > 1 ? p.lx / (p.colCountX - 1) : p.lx;
-      const xDenseCount = Math.ceil((2 * jlDenseZone) / stir.spacingDense);
-      const xNormalCount = Math.ceil(Math.max(xSpanLen - 2 * jlDenseZone, 0) / stir.spacingNormal);
-      const xSpans = Math.max(p.colCountX - 1, 1);
-      const xStirCount = totalXBeams * (xDenseCount + xNormalCount) * xSpans;
-      const ySpanLen = p.colCountY > 1 ? p.ly / (p.colCountY - 1) : p.ly;
-      const yDenseCount = Math.ceil((2 * jlDenseZone) / stir.spacingDense);
-      const yNormalCount = Math.ceil(Math.max(ySpanLen - 2 * jlDenseZone, 0) / stir.spacingNormal);
-      const ySpans = Math.max(p.colCountY - 1, 1);
-      const yStirCount = totalYBeams * (yDenseCount + yNormalCount) * ySpans;
-      const jlStirFormula: FormulaStep[] = [
-        { label: '箍筋内净尺寸', formula: '内宽 = b梁-2c, 内高 = h梁-2c', substitution: `= ${beamB}-2×${cover}, ${beamH}-2×${cover}`, result: `= ${innerBJL}×${innerHJL} mm` },
-        { label: '单根下料长度', formula: 'L = 2(b₀+h₀) + 2×hook + 4×1.75d', substitution: `含弯钩${stirrupHookLen(stir.diameter)}mm`, result: `= ${Math.round(stirCutMm)} mm = ${stirLenM.toFixed(3)} m` },
-        { label: '加密区长度', formula: 'l_d = max(2h, 500)', substitution: `= max(2×${beamH}, 500)`, result: `= ${jlDenseZone} mm` },
-        { label: 'X向每跨', formula: `密${xDenseCount} + 疏${xNormalCount} × ${xSpans}跨 × ${totalXBeams}道`, substitution: '', result: `= ${xStirCount}` },
-        { label: 'Y向每跨', formula: `密${yDenseCount} + 疏${yNormalCount} × ${ySpans}跨 × ${totalYBeams}道`, substitution: '', result: `= ${yStirCount}` },
-      ];
-      push('JL箍筋 (X向)', p.beamStirrup, `${stirLenM.toFixed(3)}m × ${xStirCount} (密${xDenseCount}+疏${xNormalCount}/跨)`,
-        stir.grade, stir.diameter, xStirCount, stirLenM, '#27AE60', jlStirFormula);
-      push('JL箍筋 (Y向)', p.beamStirrup, `${stirLenM.toFixed(3)}m × ${yStirCount} (密${yDenseCount}+疏${yNormalCount}/跨)`,
-        stir.grade, stir.diameter, yStirCount, stirLenM, '#27AE60');
+    const arrangement=raftBeamArrangement(p),stir=arrangement.stir;
+    for(const [direction,spec,stations,beamCount] of [
+      ['X',arrangement.xSpec,arrangement.xStations,p.colCountY],
+      ['Y',arrangement.ySpec,arrangement.yStations,p.colCountX],
+    ] as const) for(const [i,hoop] of spec.hoops.entries()) {
+      const count=stations.length*beamCount;
+      push(`JL${i?'内箍'+i:'外箍'}（${direction}向）`,p.beamStirrup||'A10@150(4)',`${(hoop.lengthMm/1000).toFixed(3)}m × ${count}`,
+        stir.grade,stir.diameter,count,hoop.lengthMm/1000,'#27AE60',[
+          {label:'独立箍单根展开',formula:'矩形开口箍 + 两端135°弯钩',substitution:`${hoop.widthMm.toFixed(1)} × ${hoop.heightMm.toFixed(1)}mm`,result:`${hoop.lengthMm.toFixed(1)} mm`},
+          {label:'实布根数',formula:'每道梁的箍筋站位数 × 梁道数',substitution:`${stations.length} × ${beamCount}`,result:`${count} 个（全长按较小箍距布置）`},
+        ]);
     }
   }
 
@@ -2134,16 +1673,14 @@ export function calcRaft(p: RaftFoundationParams): CalcResult {
       const csX = parseSlabRebar(p.colStripBarX);
       // ZXB X向附加筋: 分布在Y列线的±colStripWidth/2带内，沿X向通长
       const csXLen = (p.lx - 2 * cover) / 1000;
-      const stripZoneCount = Math.floor(p.colStripWidth / csX.spacing) + 1;
-      const csXCount = p.colCountY * stripZoneCount;
+      const csXCount = raftColumnStripPositions(p,'x').length;
       push('ZXB X向附加底筋', p.colStripBarX, `${csXLen.toFixed(2)}m × ${csXCount}`,
         csX.grade, csX.diameter, csXCount, csXLen, '#D35400');
     }
     if (p.colStripBarY) {
       const csY = parseSlabRebar(p.colStripBarY);
       const csYLen = (p.ly - 2 * cover) / 1000;
-      const stripZoneCount = Math.floor(p.colStripWidth / csY.spacing) + 1;
-      const csYCount = p.colCountX * stripZoneCount;
+      const csYCount = raftColumnStripPositions(p,'y').length;
       push('ZXB Y向附加底筋', p.colStripBarY, `${csYLen.toFixed(2)}m × ${csYCount}`,
         csY.grade, csY.diameter, csYCount, csYLen, '#D35400');
     }

@@ -1,14 +1,21 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { FittedCamera } from './FittedCamera';
+
+import { ViewerControls } from './ViewerControls';
+
+import { useMemo, useState } from 'react';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
-import { Maximize2, Minimize2 } from 'lucide-react';
+
 import { useFullscreen } from '@/lib/useFullscreen';
 import * as THREE from 'three';
 import type { JointParams, RebarMeshInfo } from '@/lib/types';
-import { parseRebar, parseStirrup, gradeLabel } from '@/lib/rebar';
+import { parseRebar, parseStirrup, gradeLabel, resolveColumnBars } from '@/lib/rebar';
 import { calcBendLength } from '@/lib/anchor';
+import { roundedRebarPath } from '@/lib/rebar-curve';
+import { CappedRebarTube } from './three/CappedRebarTube';
+import { HoopProfile } from './three/HoopProfile';
 import { S } from '@/lib/constants';
 
 /* ---- Clickable mesh wrapper ---- */
@@ -32,78 +39,23 @@ function Clickable({ info, selected, onSelect, children, ...props }: {
 
 /* ---- Tube along a path (for bent bars) ---- */
 function TubePath({ points, radius, color }: { points: THREE.Vector3[]; radius: number; color: string }) {
-  const curve = useMemo(() => new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.01), [points]);
+  const curve = useMemo(() => roundedRebarPath(points, radius * 8), [points, radius]);
   return (
-    <mesh>
-      <tubeGeometry args={[curve, 32, radius, 8, false]} />
+    <CappedRebarTube curve={curve} radius={radius} segments={160}>
       <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-    </mesh>
+    </CappedRebarTube>
   );
 }
 
-/* ---- Stirrup ring (horizontal) ---- */
-function HStirrupRing({ y, width, depth, radius, color }: {
-  y: number; width: number; depth: number; radius: number; color: string;
+function HStirrupRing({ y, width, depth, radius, color, legs }: {
+  y: number; width: number; depth: number; radius: number; color: string; legs: number;
 }) {
-  const curve = useMemo(() => {
-    const w2 = width / 2, d2 = depth / 2, r = 0.012;
-    const shape = new THREE.Shape();
-    shape.moveTo(-w2 + r, -d2);
-    shape.lineTo(w2 - r, -d2);
-    shape.quadraticCurveTo(w2, -d2, w2, -d2 + r);
-    shape.lineTo(w2, d2 - r);
-    shape.quadraticCurveTo(w2, d2, w2 - r, d2);
-    shape.lineTo(-w2 + r, d2);
-    shape.quadraticCurveTo(-w2, d2, -w2, d2 - r);
-    shape.lineTo(-w2, -d2 + r);
-    shape.quadraticCurveTo(-w2, -d2, -w2 + r, -d2);
-    const pts = shape.getPoints(40);
-    return new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p.x, 0, p.y)), true);
-  }, [width, depth]);
-
-  return (
-    <mesh position={[0, y, 0]}>
-      <tubeGeometry args={[curve, 48, radius, 8, true]} />
-      <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-    </mesh>
-  );
+  return <group position={[0, y, 0]}><HoopProfile width={width} height={depth} diameter={radius * 2000} color={color} plane="xz" legs={legs} /></group>;
 }
-
-/* ---- Vertical stirrup ring (for beam) ---- */
-function VStirrupRing({ x, width, height, yCenter, radius, color }: {
-  x: number; width: number; height: number; yCenter: number; radius: number; color: string;
+function VStirrupRing({ x, width, height, yCenter, radius, color, legs }: {
+  x: number; width: number; height: number; yCenter: number; radius: number; color: string; legs: number;
 }) {
-  const curve = useMemo(() => {
-    const w2 = width / 2, h2 = height / 2, r = 0.012;
-    const shape = new THREE.Shape();
-    shape.moveTo(-w2 + r, -h2);
-    shape.lineTo(w2 - r, -h2);
-    shape.quadraticCurveTo(w2, -h2, w2, -h2 + r);
-    shape.lineTo(w2, h2 - r);
-    shape.quadraticCurveTo(w2, h2, w2 - r, h2);
-    shape.lineTo(-w2 + r, h2);
-    shape.quadraticCurveTo(-w2, h2, -w2, h2 - r);
-    shape.lineTo(-w2, -h2 + r);
-    shape.quadraticCurveTo(-w2, -h2, -w2 + r, -h2);
-    const pts = shape.getPoints(40);
-    return new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(0, p.y, p.x)), true);
-  }, [width, height]);
-
-  return (
-    <mesh position={[x, yCenter, 0]}>
-      <tubeGeometry args={[curve, 48, radius, 8, true]} />
-      <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-    </mesh>
-  );
-}
-
-/* ---- Main Joint Scene ---- */
-function CameraController({ targetPosition }: { targetPosition: [number, number, number] | null }) {
-  const { camera } = useThree();
-  useEffect(() => {
-    if (targetPosition) { camera.position.set(...targetPosition); camera.updateProjectionMatrix(); }
-  }, [targetPosition, camera]);
-  return null;
+  return <group position={[x, yCenter, 0]}><HoopProfile width={width} height={height} diameter={radius * 2000} color={color} plane="yz" legs={legs} /></group>;
 }
 
 function JointScene({ params, selected, onSelect, concreteOpacity }: {
@@ -134,17 +86,9 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
   const bendLen = calcBendLength(beamTopR.diameter) * S;
 
   // ---- Column rebars (vertical, full height) ----
-  const colInnerW = cB - 2 * COVER;
-  const colInnerH = cH - 2 * COVER;
-  const colRebarPos = useMemo(() => {
-    const perSide = Math.max(Math.round(colR.count / 4), 2);
-    const pts: { x: number; z: number }[] = [];
-    for (let i = 0; i < perSide; i++) pts.push({ x: -colInnerW / 2 + (colInnerW * i) / (perSide - 1), z: colInnerH / 2 });
-    for (let i = 1; i < perSide; i++) pts.push({ x: colInnerW / 2, z: colInnerH / 2 - (colInnerH * i) / (perSide - 1) });
-    for (let i = 1; i < perSide; i++) pts.push({ x: colInnerW / 2 - (colInnerW * i) / (perSide - 1), z: -colInnerH / 2 });
-    for (let i = 1; i < perSide - 1; i++) pts.push({ x: -colInnerW / 2, z: -colInnerH / 2 + (colInnerH * i) / (perSide - 1) });
-    return pts.slice(0, colR.count);
-  }, [colR.count, colInnerW, colInnerH]);
+  const colInnerW = cB - 2 * COVER - 2 * colStir.diameter * S - colR.diameter * S;
+  const colInnerH = cH - 2 * COVER - 2 * colStir.diameter * S - colR.diameter * S;
+  const colRebarPos = useMemo(() => resolveColumnBars(params.colMain, undefined, undefined, undefined, colInnerW, colInnerH).bars, [params.colMain, colInnerW, colInnerH]);
 
   // ---- Column stirrups ----
   const colStirPositions = useMemo(() => {
@@ -162,7 +106,7 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
   }, [colStir.spacingDense, colStir.spacingNormal, jointBottom, jointTop]);
 
   // ---- Beam rebar positions (in Z direction, beam width) ----
-  const beamInnerW = bB - 2 * COVER;
+  const beamInnerW = bB - 2 * COVER - 2 * beamStir.diameter * S - Math.max(beamTopR.diameter, beamBotR.diameter) * S;
   const beamTopBars = useMemo(() => {
     const spacing = beamInnerW / Math.max(beamTopR.count - 1, 1);
     return Array.from({ length: beamTopR.count }, (_, i) => -beamInnerW / 2 + i * spacing);
@@ -197,8 +141,11 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
   const beamBotInfo: RebarMeshInfo = { type: 'beamBottom', label: '梁下部纵筋', detail: `${params.beamBottom} · ${beamBotR.count}根 Φ${beamBotR.diameter}，${params.anchorType === 'bent' ? '弯锚入柱' : '直锚入柱'}` };
   const beamStirInfo: RebarMeshInfo = { type: 'beamStirrup', label: '梁箍筋', detail: `${params.beamStirrup} · 加密区 ${beamStir.spacingDense}mm，非加密区 ${beamStir.spacingNormal}mm` };
 
-  const topY = beamCenterY + bH / 2 - COVER;
-  const botY = beamCenterY - bH / 2 + COVER;
+  const topY = beamCenterY + bH / 2 - COVER - (beamStir.diameter + beamTopR.diameter / 2) * S;
+  const botY = beamCenterY - bH / 2 + COVER + (beamStir.diameter + beamBotR.diameter / 2) * S;
+
+  const topAnchorX = -cB / 2 + COVER + (colStir.diameter + colR.diameter / 2 + (colR.diameter + beamTopR.diameter) / 2) * S + .003;
+  const botAnchorX = topAnchorX + (beamTopR.diameter + beamBotR.diameter) * S / 2 + .005;
 
   return (
     <>
@@ -262,8 +209,8 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
             : (selected?.type === 'colStirrup' ? '#2ECC71' : '#27AE60');
           return (
             <HStirrupRing key={`cs${i}`} y={y}
-              width={colInnerW + colStir.diameter * S}
-              depth={colInnerH + colStir.diameter * S}
+              width={cB - 2 * COVER - colStir.diameter * S}
+              depth={cH - 2 * COVER - colStir.diameter * S} legs={colStir.legs}
               radius={colStir.diameter * S / 2} color={color} />
           );
         })}
@@ -280,41 +227,27 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
             const pts = [
               new THREE.Vector3(cB / 2 + beamLen, topY, z),
               new THREE.Vector3(cB / 2, topY, z),
-              new THREE.Vector3(-cB / 2 + COVER + 0.01, topY, z),
-              new THREE.Vector3(-cB / 2 + COVER, topY - 0.02, z),
-              new THREE.Vector3(-cB / 2 + COVER, topY - bendLen, z),
+              new THREE.Vector3(topAnchorX, topY, z),
+              new THREE.Vector3(topAnchorX, topY - bendLen, z),
             ];
             return (
               <group key={`bt${i}`}>
                 <TubePath points={pts} radius={r} color={color} />
                 {isMiddle && (
                   <TubePath points={[
-                    new THREE.Vector3(-cB / 2 - beamLen, topY, z),
-                    new THREE.Vector3(-cB / 2, topY, z),
-                    new THREE.Vector3(cB / 2 - COVER - 0.01, topY, z),
-                    new THREE.Vector3(cB / 2 - COVER, topY - 0.02, z),
-                    new THREE.Vector3(cB / 2 - COVER, topY - bendLen, z),
+                    new THREE.Vector3(-cB / 2 - beamLen, topY - 2 * r - .003, z),
+                    new THREE.Vector3(-cB / 2, topY - 2 * r - .003, z),
+                    new THREE.Vector3(-topAnchorX, topY - 2 * r - .003, z),
+                    new THREE.Vector3(-topAnchorX, topY - 2 * r - .003 - bendLen, z),
                   ]} radius={r} color={color} />
                 )}
               </group>
             );
           } else {
-            // Straight anchor
-            const totalLen = beamLen + cH;
-            return (
-              <group key={`bt${i}`}>
-                <mesh position={[(cB / 2 + beamLen - totalLen / 2) / 2 + totalLen / 4, topY, z]} rotation={[0, 0, Math.PI / 2]}>
-                  <cylinderGeometry args={[r, r, beamLen + cH * 0.8, 12]} />
-                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-                </mesh>
-                {isMiddle && (
-                  <mesh position={[-(cB / 2 + beamLen - totalLen / 2) / 2 - totalLen / 4, topY, z]} rotation={[0, 0, Math.PI / 2]}>
-                    <cylinderGeometry args={[r, r, beamLen + cH * 0.8, 12]} />
-                    <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-                  </mesh>
-                )}
-              </group>
-            );
+            return <TubePath key={`bt${i}`} points={[
+              new THREE.Vector3(isMiddle ? -cB / 2 - beamLen : -cB / 2 + COVER + r, topY, z),
+              new THREE.Vector3(cB / 2 + beamLen, topY, z),
+            ]} radius={r} color={color} />;
           }
         })}
       </Clickable>
@@ -324,44 +257,33 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
         {beamBotBars.map((z, i) => {
           const color = selected?.type === 'beamBottom' ? '#3498DB' : '#2980B9';
           const r = beamBotR.diameter * S / 2;
+          const bendLen = calcBendLength(beamBotR.diameter) * S;
 
           if (params.anchorType === 'bent') {
             const pts = [
               new THREE.Vector3(cB / 2 + beamLen, botY, z),
               new THREE.Vector3(cB / 2, botY, z),
-              new THREE.Vector3(-cB / 2 + COVER + 0.01, botY, z),
-              new THREE.Vector3(-cB / 2 + COVER, botY + 0.02, z),
-              new THREE.Vector3(-cB / 2 + COVER, botY + bendLen, z),
+              new THREE.Vector3(botAnchorX, botY, z),
+              new THREE.Vector3(botAnchorX, botY + bendLen, z),
             ];
             return (
               <group key={`bb${i}`}>
                 <TubePath points={pts} radius={r} color={color} />
                 {isMiddle && (
                   <TubePath points={[
-                    new THREE.Vector3(-cB / 2 - beamLen, botY, z),
-                    new THREE.Vector3(-cB / 2, botY, z),
-                    new THREE.Vector3(cB / 2 - COVER - 0.01, botY, z),
-                    new THREE.Vector3(cB / 2 - COVER, botY + 0.02, z),
-                    new THREE.Vector3(cB / 2 - COVER, botY + bendLen, z),
+                    new THREE.Vector3(-cB / 2 - beamLen, botY + 2 * r + .003, z),
+                    new THREE.Vector3(-cB / 2, botY + 2 * r + .003, z),
+                    new THREE.Vector3(-botAnchorX, botY + 2 * r + .003, z),
+                    new THREE.Vector3(-botAnchorX, botY + 2 * r + .003 + bendLen, z),
                   ]} radius={r} color={color} />
                 )}
               </group>
             );
           } else {
-            return (
-              <group key={`bb${i}`}>
-                <mesh position={[(cB / 2 + beamLen) / 2 - cH * 0.1, botY, z]} rotation={[0, 0, Math.PI / 2]}>
-                  <cylinderGeometry args={[r, r, beamLen + cH * 0.8, 12]} />
-                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-                </mesh>
-                {isMiddle && (
-                  <mesh position={[-(cB / 2 + beamLen) / 2 + cH * 0.1, botY, z]} rotation={[0, 0, Math.PI / 2]}>
-                    <cylinderGeometry args={[r, r, beamLen + cH * 0.8, 12]} />
-                    <meshStandardMaterial color={color} roughness={0.4} metalness={0.6} />
-                  </mesh>
-                )}
-              </group>
-            );
+            return <TubePath key={`bb${i}`} points={[
+              new THREE.Vector3(isMiddle ? -cB / 2 - beamLen : -cB / 2 + COVER + r, botY, z),
+              new THREE.Vector3(cB / 2 + beamLen, botY, z),
+            ]} radius={r} color={color} />;
           }
         })}
       </Clickable>
@@ -370,8 +292,8 @@ function JointScene({ params, selected, onSelect, concreteOpacity }: {
       <Clickable info={beamStirInfo} selected={selected?.type === 'beamStirrup'} onSelect={onSelect}>
         {beamStirPositions.map((x, i) => (
           <VStirrupRing key={`bs${i}`} x={x}
-            width={beamInnerW + beamStir.diameter * S}
-            height={bH - 2 * COVER + beamStir.diameter * S}
+            width={bB - 2 * COVER - beamStir.diameter * S} legs={beamStir.legs}
+            height={bH - 2 * COVER - beamStir.diameter * S}
             yCenter={beamCenterY}
             radius={beamStir.diameter * S / 2}
             color={selected?.type === 'beamStirrup' ? '#2ECC71' : '#27AE60'} />
@@ -415,8 +337,8 @@ export default function JointViewer({ params }: { params: JointParams }) {
   const { isFullscreen: fsActive, toggle: fsToggle, containerRef: fsContainerRef, containerClass: fsClass } = useFullscreen();
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
+    <div data-viewer className="rv-viewer">
+      <div className="rv-viewer-toolbar flex items-center gap-2 flex-wrap">
         {selected && (
           <button onClick={() => setSelected(null)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-muted cursor-pointer hover:bg-gray-200 transition-colors">
             取消选中
@@ -429,43 +351,27 @@ export default function JointViewer({ params }: { params: JointParams }) {
         </span>
       </div>
 
-      <div ref={fsContainerRef} className={`relative w-full bg-surface overflow-hidden ${fsClass}`}>
+      <div ref={fsContainerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${fsClass}`}>
         {selected && <InfoTooltip info={selected} />}
 
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5">
-          {[
+        <ViewerControls views={[
             { name: '正面', pos: [0, 1.5, 5] as [number, number, number] },
             { name: '侧面', pos: [5, 1.5, 0] as [number, number, number] },
             { name: '俯视', pos: [0, 6, 0.1] as [number, number, number] },
             { name: '透视', pos: [3, 2.5, 4] as [number, number, number] },
-          ].map(a => (
-            <button key={a.name} onClick={() => setCameraTarget(a.pos)}
-              className="px-2 py-1 rounded-md text-[11px] font-medium cursor-pointer bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors">
-              {a.name}
-            </button>
-          ))}
-          <div className="flex items-center gap-1 ml-1 px-2 py-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60">
-            <span className="text-[11px] text-muted">透明</span>
-            <input type="range" min={0} max={0.4} step={0.02} value={concreteOpacity}
-              onChange={e => setConcreteOpacity(parseFloat(e.target.value))} className="w-12 accent-accent" />
-          </div>
-          <button onClick={fsToggle}
-            className="ml-1 p-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors cursor-pointer"
-            title={fsActive ? '退出全屏 (Esc)' : '全屏显示'}>
-            {fsActive ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
-        </div>
+          ]} onView={setCameraTarget} opacity={concreteOpacity} onOpacity={setConcreteOpacity}
+          fullscreen={fsActive} onFullscreen={fsToggle} />
 
-        <Canvas camera={{ position: [3, 2.5, 4], fov: 45 }} scene={{ background: new THREE.Color('#f8fafc') }}>
-          <CameraController targetPosition={cameraTarget} />
+        <Canvas camera={{ position: [3, 2.5, 4], fov: 45 }} scene={{ background: new THREE.Color('#071725') }}>
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[3, 2.5, 4]} center={[0, 1.5, 0]} bounds={[5, 3.6, 1.2]} />
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 8, 5]} intensity={0.8} castShadow />
           <JointScene params={params} selected={selected} onSelect={setSelected} concreteOpacity={concreteOpacity} />
-          <Grid args={[10, 10]} position={[0, -0.01, 0]} cellColor="#E2E8F0" sectionColor="#E2E8F0" fadeDistance={15} />
+          <Grid args={[10, 10]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={15} />
           <axesHelper args={[1]} />
           <OrbitControls target={[0, 1.5, 0]} enableDamping dampingFactor={0.1} />
         </Canvas>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
+        <div className="rv-viewer-hints absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
           左键旋转 · 右键平移 · 滚轮缩放 · 点击钢筋查看详情
         </div>
       </div>

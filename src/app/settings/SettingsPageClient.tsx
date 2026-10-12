@@ -139,7 +139,7 @@ export function SettingsPageClient() {
   const configuredCount = Object.values(keys).filter(Boolean).length;
 
   return (
-    <main className="px-4 py-6 max-w-2xl mx-auto">
+    <main className="rv-utility-page">
       <div className="mb-6">
         <h1 className="text-xl font-bold text-primary flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-accent" />

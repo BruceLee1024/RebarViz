@@ -3,6 +3,7 @@
 import { useMemo, useState, useCallback } from 'react';
 import { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
+import { rebarSegmentTransform } from '@/lib/rebar-curve';
 import type { RebarMeshInfo, RebarRenderMode } from '@/lib/types';
 import { S, REBAR_MATERIAL, REBAR_SEGMENTS } from '@/lib/constants';
 
@@ -33,8 +34,6 @@ export interface RebarBarProps {
   renderOrder?: number;
   highlighted?: boolean;
   renderMode?: RebarRenderMode;
-  activeScale?: number;
-  highlightScale?: number;
 }
 
 /**
@@ -53,8 +52,6 @@ export function RebarBar({
   renderOrder = 1,
   highlighted = false,
   renderMode = 'solid',
-  activeScale = 1.3,
-  highlightScale = 1.08,
 }: RebarBarProps) {
   const [hovered, setHovered] = useState(false);
 
@@ -67,7 +64,6 @@ export function RebarBar({
   );
 
   const activeColor = selected ? hiColor : hovered ? hiColor : highlighted ? hiColor : color;
-  const scale = selected ? activeScale : hovered ? Math.min(activeScale, 1.15) : highlighted ? highlightScale : 1;
   const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (selected || hovered || highlighted));
   const showCenterline = renderMode === 'centerline' || !showSolid;
 
@@ -104,7 +100,7 @@ export function RebarBar({
       }}
     >
       {showSolid && (
-        <mesh scale={[scale, 1, scale]}>
+        <mesh>
           <primitive object={geometry} attach="geometry" />
           <meshStandardMaterial
             color={activeColor}
@@ -156,26 +152,10 @@ export function SlopedRebarBar({
 }: SlopedRebarBarProps) {
   const [hovered, setHovered] = useState(false);
 
-  const { midPos, length, rotation } = useMemo(() => {
-    const dx = end[0] - start[0];
-    const dy = end[1] - start[1];
-    const dz = end[2] - start[2];
-    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const mid: [number, number, number] = [
-      (start[0] + end[0]) / 2,
-      (start[1] + end[1]) / 2,
-      (start[2] + end[2]) / 2,
-    ];
-    const angle = Math.atan2(dy, dx);
-    return {
-      midPos: mid,
-      length: len,
-      rotation: [0, 0, angle - Math.PI / 2] as [number, number, number],
-    };
-  }, [start, end]);
+  const { position: midPos, length, quaternion } = useMemo(() =>
+    rebarSegmentTransform(new THREE.Vector3(...start), new THREE.Vector3(...end)), [start, end]);
 
   const activeColor = selected ? hiColor : hovered ? hiColor : color;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
   const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (selected || hovered));
   const showCenterline = renderMode === 'centerline' || !showSolid;
   const hitGeometry = useMemo(
@@ -193,7 +173,7 @@ export function SlopedRebarBar({
   return (
     <group
       position={midPos}
-      rotation={rotation}
+      quaternion={quaternion}
       renderOrder={2}
       onClick={(e) => {
         e.stopPropagation();
@@ -210,7 +190,7 @@ export function SlopedRebarBar({
       }}
     >
       {showSolid && (
-        <mesh scale={[scale, 1, scale]}>
+        <mesh>
           <primitive object={getCachedGeo((diameter * S) / 2, length)} attach="geometry" />
           <meshStandardMaterial
             color={activeColor}

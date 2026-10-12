@@ -1,5 +1,9 @@
 'use client';
 
+import type { BeamWorkspacePageProps } from '@/lib/beam-workspace';
+
+import { FormworkCalc } from '@/components/FormworkCalc';
+
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -22,10 +26,11 @@ import { LazyAISidebar as AISidebar } from '@/components/LazyAISidebar';
 import { RebarRatioCard } from '@/components/RebarRatioCard';
 import { buildBeamContext } from '@/lib/ai-context';
 import { decodeSharedParam } from '@/lib/share-params';
-import { Sparkles, HelpCircle } from 'lucide-react';
+import { HelpCircle } from 'lucide-react';
+import { WorkbenchLayout } from '@/components/WorkbenchLayout';
 import type { ComponentType } from '@/lib/types';
 import { Tutorial, resetTutorial } from '@/components/Tutorial';
-import { checkBeamCompliance } from '@/lib/compliance';
+import { checkCompliance } from '@/lib/compliance';
 import { CompliancePanel, ComplianceBadge } from '@/components/CompliancePanel';
 import { useHistory } from '@/lib/useHistory';
 import { HistoryPanel } from '@/components/HistoryPanel';
@@ -34,9 +39,10 @@ import { ComparePanel } from '@/components/ComparePanel';
 const DATA_TABS = [
   { key: 'section', label: '截面图' },
   { key: 'ratio', label: '配筋率' },
-  { key: 'compliance', label: '规范校验' },
+  { key: 'compliance', label: '构造检查' },
   { key: 'weight', label: '用量估算' },
   { key: 'concrete', label: '混凝土量' },
+  { key: 'formwork', label: '模板量' },
   { key: 'bbs', label: '弯折详图' },
   { key: 'compare', label: '方案对比' },
 ] as const;
@@ -51,8 +57,8 @@ const presetList = [
   { key: 'standard', label: '标准梁', dot: 'bg-green-400' },
   { key: 'complex', label: '复杂梁', dot: 'bg-purple-400' },
   { key: 'mixedDia', label: '混合直径', dot: 'bg-amber-400' },
-  { key: 'haunchH', label: '水平加腘', dot: 'bg-orange-400' },
-  { key: 'haunchV', label: '竖向加腘', dot: 'bg-cyan-400' },
+  { key: 'haunchH', label: '水平加腋', dot: 'bg-orange-400' },
+  { key: 'haunchV', label: '竖向加腋', dot: 'bg-cyan-400' },
   { key: 'multiSpan', label: '多跨连续梁', dot: 'bg-rose-400' },
 ] as const;
 
@@ -92,17 +98,21 @@ function applySpanCountPatch(current: BeamParams, patch: Partial<BeamParams>): B
   };
 }
 
-export function BeamPageClient() {
+export function BeamPageClient({ initialParams, workspaceDefaults, onParamsChange, workspaceTitle }: BeamWorkspacePageProps<BeamParams> = {}) {
+  const defaults: BeamParams = workspaceDefaults ?? DEFAULT;
+  const coupling = defaults.beamKind === 'coupling';
   const searchParams = useSearchParams();
   const router = useRouter();
   const [params, setParams] = useState<BeamParams>(() => {
+    if (initialParams) return initialParams;
     const p = searchParams.get('p');
     const shared = decodeSharedParam<Partial<BeamParams>>(p ?? undefined);
     if (shared && shared.b && shared.h) {
-      return { ...DEFAULT, ...shared };
+      return { ...defaults, ...shared, beamKind: coupling ? 'coupling' : 'frame' };
     }
-    return DEFAULT;
+    return defaults;
   });
+  useEffect(() => { onParamsChange?.(params); }, [params, onParamsChange]);
   const [cutPosition, setCutPosition] = useState<number | null>(null);
   const [showCut, setShowCut] = useState(false);
 
@@ -146,7 +156,7 @@ export function BeamPageClient() {
   const calcResult = useMemo(() => calcBeam(params), [params]);
   const concreteResult = useMemo(() => calcBeamConcrete(params), [params]);
   const ratioResult = useMemo(() => calcBeamRebarRatios(params), [params]);
-  const complianceResults = useMemo(() => checkBeamCompliance(params), [params]);
+  const complianceResults = useMemo(() => checkCompliance('beam', params), [params]);
   const aiContext = useMemo(() => buildBeamContext(params), [params]);
 
   // Validation
@@ -180,13 +190,18 @@ export function BeamPageClient() {
   const [selectedRebarInfo, setSelectedRebarInfo] = useState<RebarMeshInfo | null>(null);
 
   const handleAIApply = (p: Partial<BeamParams>) => {
-    setParams(current => applySpanCountPatch(current, p));
+    setParams(current => applySpanCountPatch(current, { ...p, beamKind: coupling ? 'coupling' : 'frame' }));
   };
 
   const handlePreset = (key: keyof typeof BEAM_PRESETS) => {
-    setParams({ ...BEAM_PRESETS[key] });
+    setParams({ ...BEAM_PRESETS[key], ...(coupling ? { beamKind: 'coupling' as const, id: BEAM_PRESETS[key].id.replace(/^KL\d+/, 'LL1'), hc: defaults.hc, supportDepth: defaults.supportDepth } : {}) });
   };
   const [dataTab, setDataTab] = useState<typeof DATA_TABS[number]['key']>('section');
+  const [analysisOpen, setAnalysisOpen] = useState(true);
+  const selectDataTab = (tab: typeof DATA_TABS[number]['key']) => {
+    setDataTab(tab);
+    setAnalysisOpen(true);
+  };
   const aiMessage = searchParams.get('ai') || undefined;
   const [showAI, setShowAI] = useState(!!aiMessage);
   const [showTutorial, setShowTutorial] = useState(false);
@@ -219,7 +234,7 @@ export function BeamPageClient() {
     const list = fromFavorites ? favorites : history;
     const item = list.find(i => i.id === id);
     if (item) {
-      setParams(item.params as BeamParams);
+      setParams({ ...item.params as BeamParams, beamKind: coupling ? 'coupling' : 'frame' });
     }
   };
 
@@ -229,50 +244,56 @@ export function BeamPageClient() {
     if (item) {
       setCompareParams(item.params as BeamParams);
       setCompareLabel(item.name);
-      setDataTab('compare');
+      selectDataTab('compare');
     }
   };
 
   return (
-    <main className="px-4 py-4">
-      <Tutorial componentType="beam" forceShow={showTutorial} onComplete={() => setShowTutorial(false)} />
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 左栏：参数输入 */}
-        <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-primary">参数输入</h2>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => { resetTutorial(); setShowTutorial(true); }}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors"
-                  title="查看教程"
-                >
-                  <HelpCircle className="w-4 h-4" />
-                </button>
-                <ResetButton onClick={() => setParams(DEFAULT)} />
-                <ShareButton params={params} />
-              </div>
-            </div>
+    <>
+      {!coupling && <Tutorial componentType="beam" forceShow={showTutorial} onComplete={() => setShowTutorial(false)} />}
+      <WorkbenchLayout
+        title={workspaceTitle ?? "梁配筋工作台"}
+        summary={<>{params.id}<span>·</span>{params.b} × {params.h} mm<span>·</span>{params.spanCount || 1} 跨</>}
+        actions={<>
+          {!coupling && <button onClick={() => { resetTutorial(); setShowTutorial(true); }} className="rv-icon-button" aria-label="查看教程" title="查看教程"><HelpCircle size={17} /></button>}
+          <ShareButton params={params} className="rv-button rv-share-button" />
+        </>}
+        inspector={<>
+          <div className="rv-inspector-tools"><span>统一梁配置</span><ResetButton onClick={() => setParams(defaults)} /></div>
+          <div className="rv-parameter-form">
+            <div className="mb-4"><label className="block text-xs">载入配筋示例<select className="w-full mt-1 border" value="" onChange={e => { if (e.target.value) handlePreset(e.target.value as keyof typeof BEAM_PRESETS); }}><option value="">选择示例（可选）</option>{presetList.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}</select></label></div>
 
-            <div className="mb-4">
-              <label className="text-xs text-muted mb-2 block">快速示例</label>
-              <div className="flex flex-wrap gap-1.5">
-                {presetList.map(({ key, label, dot }) => (
-                  <button key={key} onClick={() => handlePreset(key)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
-                    <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-3">
+            <div className="rv-dimension-fields">
               <Field label="梁编号" value={params.id} onChange={v => update({ id: v })} />
               <NumField label="截面宽 b (mm)" value={params.b} onChange={v => update({ b: v })} error={errors.b?.message} min={100} max={1000} />
               <NumField label="截面高 h (mm)" value={params.h} onChange={v => update({ h: v })} error={errors.h?.message} min={200} max={1500} />
             </div>
+
+            <Section title="梁构造" defaultOpen>
+              <NumField label="跨数" value={params.spanCount || 1} onChange={updateSpanCount} min={1} max={6} />
+              <NumField label="梁净跨 (mm)" value={params.spanLength} onChange={v => update({ spanLength: v })} min={1000} max={15000} />
+
+              <SelectField label="加腋类型" value={params.haunchType} onChange={v => update({ haunchType: v as HaunchType, haunchLength: params.haunchLength || 800, haunchHeight: params.haunchHeight || 200 })}
+                options={[
+                  { value: 'none', label: '无加腋' },
+                  { value: 'horizontal', label: '水平加腋（两侧加宽）' },
+                  { value: 'vertical', label: '竖向加腋（梁底加高）' },
+                ]} />
+              {params.haunchType !== 'none' && (
+                <>
+                  <NumField label="加腋长度 c₁ (mm)" value={params.haunchLength} onChange={v => update({ haunchLength: v })} min={200} max={2000} />
+                  <NumField label={params.haunchType === 'horizontal' ? '单侧加腋宽度 (mm)' : '加腋高度 (mm)'} value={params.haunchHeight} onChange={v => update({ haunchHeight: v })} min={100} max={800} />
+                  <SelectField label="加腋位置" value={params.haunchSide} onChange={v => update({ haunchSide: v as 'both' | 'left' | 'right' })}
+                    options={[
+                      { value: 'both', label: '两端加腋' },
+                      { value: 'left', label: '仅左端' },
+                      { value: 'right', label: '仅右端' },
+                    ]} />
+                </>
+              )}
+
+              <p className="text-[11px] text-muted">单跨、多跨与加腋可自由组合；不同直径直接在配筋栏用 + 连接。</p>
+            </Section>
 
             <Section title="集中标注" defaultOpen>
               <Field label="上部通长筋" value={params.top} onChange={v => update({ top: v })} placeholder="如: 2C25" error={errors.top?.message}
@@ -292,10 +313,8 @@ export function BeamPageClient() {
               <SelectField label="抗震等级" value={params.seismicGrade} onChange={v => update({ seismicGrade: v as SeismicGrade })}
                 options={SEISMIC_GRADES.map(g => ({ value: g, label: g }))} />
               <NumField label="保护层 (mm)" value={params.cover} onChange={v => update({ cover: v })} min={15} max={50} />
-              <NumField label="梁净跨 (mm)" value={params.spanLength} onChange={v => update({ spanLength: v })} min={1000} max={15000} />
-              <NumField label="支座柱宽 hc (mm)" value={params.hc} onChange={v => update({ hc: v })} min={200} max={1200} />
-              <NumField label="支座柱截面深度 (mm)" value={params.supportDepth || 600} onChange={v => update({ supportDepth: v })} min={200} max={1500} />
-              <NumField label="跨数" value={params.spanCount || 1} onChange={updateSpanCount} min={1} max={6} />
+              <NumField label={coupling ? "墙内支承长度 (mm)" : "支座柱宽 hc (mm)"} value={params.hc} onChange={v => update({ hc: v })} min={200} max={1200} />
+              <NumField label={coupling ? "墙厚 (mm)" : "支座柱截面深度 (mm)"} value={params.supportDepth || 600} onChange={v => update({ supportDepth: v })} min={200} max={1500} />
             </Section>
 
             {(params.spanCount || 1) > 1 && (
@@ -405,33 +424,15 @@ export function BeamPageClient() {
                 <Field label="拉筋" value={params.tieBar || ''} onChange={v => update({ tieBar: v || undefined })} placeholder="如: A6（留空自动确定）" />
               )}
             </Section>
-            <Section title="加腋 (22G101 2-36)">
-              <SelectField label="加腋类型" value={params.haunchType} onChange={v => update({ haunchType: v as HaunchType })}
-                options={[
-                  { value: 'none', label: '无加腋' },
-                  { value: 'horizontal', label: '水平加腋' },
-                  { value: 'vertical', label: '竖向加腋' },
-                ]} />
-              {params.haunchType !== 'none' && (
-                <>
-                  <NumField label="加腋长度 c₁ (mm)" value={params.haunchLength} onChange={v => update({ haunchLength: v })} min={200} max={2000} />
-                  <NumField label={params.haunchType === 'horizontal' ? '加腋高度 (mm)' : '加腋宽度 (mm)'} value={params.haunchHeight} onChange={v => update({ haunchHeight: v })} min={100} max={800} />
-                  <SelectField label="加腋位置" value={params.haunchSide} onChange={v => update({ haunchSide: v as 'both' | 'left' | 'right' })}
-                    options={[
-                      { value: 'both', label: '两端加腋' },
-                      { value: 'left', label: '仅左端' },
-                      { value: 'right', label: '仅右端' },
-                    ]} />
-                </>
-              )}
-            </Section>
+
           </div>
 
+          <Section title="图例说明">
           <Legend items={[
             { color: '#C0392B', label: '纵向受力钢筋（通长筋）' },
             { color: '#8E44AD', label: '支座负筋（原位标注）' },
             { color: '#F39C12', label: '架立筋' },
-            { color: '#27AE60', label: '箍筋' },
+            { color: '#22d3ee', label: '箍筋' },
             ...(params.sideBar ? [
               { color: '#2980B9', label: '腰筋/抗扭筋' },
               { color: '#1ABC9C', label: '拉筋' },
@@ -443,10 +444,10 @@ export function BeamPageClient() {
               { color: '#E67E22', label: '加腋附加筋' },
             ] : []),
           ]} />
+          </Section>
 
           {/* 历史记录与收藏 */}
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <h3 className="text-sm font-semibold text-primary mb-3">历史记录</h3>
+          <Section title="历史记录与收藏">
             <HistoryPanel
               history={history}
               favorites={favorites}
@@ -457,53 +458,30 @@ export function BeamPageClient() {
               onRemoveHistory={removeFromHistory}
               onClearHistory={clearHistory}
             />
-          </div>
-        </div>
-
-        {/* 中栏：3D模型 + 数据 tab */}
-        <div className={`${showAI ? 'lg:col-span-6' : 'lg:col-span-9'} space-y-4 min-w-0 transition-all`}>
-          <BeamViewer params={params} cutPosition={cutPosition} showCut={showCut}
+          </Section>
+        </>}
+        viewer={<BeamViewer params={params} cutPosition={cutPosition} showCut={showCut}
             onCutPositionChange={setCutPosition} onShowCutChange={setShowCut}
             highlightedType={hoveredField}
             selectedInfo={selectedRebarInfo}
             onSelectedInfoChange={setSelectedRebarInfo}
-            onSelectedChange={setSelectedRebarType} />
-
-          {/* Data tabs */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
-              <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
-              {DATA_TABS.map(t => (
-                  <button key={t.key} onClick={() => setDataTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
-                    {t.label}
-                    {t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
-                  </button>
-                ))}
-              </div>
-              {/* AI toggle */}
-              <button onClick={() => setShowAI(a => !a)}
-                className={`ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100'}`}>
-                <Sparkles className="w-3.5 h-3.5" />
-                AI 助手
-              </button>
-            </div>
-            <div className="p-5">
+            onSelectedChange={setSelectedRebarType} />}
+        analysisOpen={analysisOpen}
+        onAnalysisOpenChange={setAnalysisOpen}
+        analysisTabs={DATA_TABS.map(t => (
+          <button key={t.key} role="tab" aria-selected={dataTab === t.key} aria-controls="beam-analysis" onClick={() => selectDataTab(t.key)} className={`rv-analysis-tab ${dataTab === t.key ? 'is-active' : ''}`}>
+            {t.label}{t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
+          </button>
+        ))}
+        analysis={<>
               {dataTab === 'section' && (
-                <>
-                  <h2 className="text-sm font-semibold text-primary mb-3">
-                    截面配筋示意
-                    {showCut && <span className="text-xs font-normal text-muted ml-2">· 跟随剖切位置</span>}
-                  </h2>
-                  <div className="flex justify-center">
-                    <BeamCrossSection params={params} cutPosition={showCut ? cutPosition : undefined} />
-                  </div>
-                </>
+                <BeamCrossSection params={params} cutPosition={showCut ? cutPosition : undefined} />
               )}
               {dataTab === 'ratio' && <RebarRatioCard ratios={ratioResult} />}
               {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
-              {dataTab === 'weight' && <WeightCalc result={calcResult} beamId={params.id} />}
+              {dataTab === 'weight' && <>{coupling && <p className="rv-quantity-notes">按通用梁中心线估算；连梁墙内锚固、交叉斜筋及其附加箍筋尚未专项计入。</p>}<WeightCalc result={calcResult} beamId={params.id} /></>}
               {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
+        <div hidden={dataTab !== 'formwork'}><FormworkCalc componentType="beam" params={params} /></div>
               {dataTab === 'bbs' && (
                 <BarBendingSchedule
                   params={params}
@@ -514,7 +492,7 @@ export function BeamPageClient() {
                       ? 'stirrup'
                       : shape.setId === 'beam.tieBar'
                         ? 'tieBar'
-                        : shape.setId.replace('beam.', '') as RebarMeshInfo['type'];
+                        : shape.setId.replace('beam.', '').split('.')[0] as RebarMeshInfo['type'];
                     setSelectedRebarInfo({
                       type,
                       label: shape.name,
@@ -565,13 +543,9 @@ export function BeamPageClient() {
                   )}
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-
-        {/* 右栏：AI 侧边栏（可收起） */}
-        {showAI && (
-          <div className="lg:col-span-3">
+        </>}
+        onAssistantToggle={() => setShowAI(v => !v)}
+        assistant={showAI ? (
             <AISidebar
               componentType="beam"
               currentParams={params}
@@ -579,7 +553,7 @@ export function BeamPageClient() {
               context={aiContext}
               notationSlot={<BeamExplain params={params} />}
               initialMessage={aiMessage}
-              onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
+              onSwitchTab={(tab) => selectDataTab(tab as typeof dataTab)}
               onHighlightElement={() => {}}
               onNavigateComponent={(type: ComponentType, message?: string) => {
                 const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
@@ -602,11 +576,11 @@ export function BeamPageClient() {
               onRunCalculation={(type) => {
                 const tabMap: Record<string, typeof dataTab> = { ratio: 'ratio', weight: 'weight', concrete: 'concrete', anchor: 'compliance' };
                 const tab = tabMap[type];
-                if (tab) setDataTab(tab);
+                if (tab) selectDataTab(tab);
                 return { summary: `已切换到${type === 'ratio' ? '配筋率' : type === 'weight' ? '用量估算' : type === 'concrete' ? '混凝土量' : '规范校验'}面板` };
               }}
               onSaveFavorite={(name, note) => addToFavorites(params, name, note)}
-              onResetParams={() => setParams({ ...BEAM_PRESETS.standard })}
+              onResetParams={() => setParams(defaults)}
               onCompareWithPreset={(preset) => {
                 if (!(preset in BEAM_PRESETS)) return `未知预设: ${preset}`;
                 const pp = BEAM_PRESETS[preset as keyof typeof BEAM_PRESETS] as unknown as Record<string, unknown>;
@@ -624,9 +598,8 @@ export function BeamPageClient() {
                   : `当前方案与预设「${preset}」完全一致`;
               }}
             />
-          </div>
-        )}
-      </div>
-    </main>
+        ) : undefined}
+      />
+    </>
   );
 }

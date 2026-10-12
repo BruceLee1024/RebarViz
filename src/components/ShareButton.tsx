@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Share2, Check } from 'lucide-react';
 import { useShareUrl } from '@/lib/useShareUrl';
 
-export function ShareButton({ params }: { params: object }) {
+export function ShareButton({ params, className }: { params: object; className?: string }) {
   const { copyShareUrl } = useShareUrl(params);
   const [copied, setCopied] = useState(false);
 
@@ -19,10 +19,12 @@ export function ShareButton({ params }: { params: object }) {
   return (
     <button
       onClick={handleCopy}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all bg-gray-100 border border-gray-200 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+      className={className ?? 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all bg-gray-100 border border-gray-200 text-gray-500 hover:bg-gray-200 hover:text-gray-700'}
+      aria-label={copied ? '已复制链接' : '分享配筋方案'}
+      title="分享配筋方案"
     >
       {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5" />}
-      {copied ? '已复制链接' : '分享配筋方案'}
+      <span>{copied ? '已复制链接' : '分享配筋方案'}</span>
     </button>
   );
 }

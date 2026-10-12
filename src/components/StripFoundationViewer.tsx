@@ -1,21 +1,28 @@
 'use client';
 
+import { BentBarSet } from './three/BentBarSet';
+import { stripDistributedPositions, stripTransverseStations } from '@/lib/quantity-geometry';
+import { FittedCamera } from './FittedCamera';
+
+import { ViewerControls } from './ViewerControls';
+
 import { useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { Grid, OrbitControls } from '@react-three/drei';
-import { Maximize2, Minimize2 } from 'lucide-react';
+
 import * as THREE from 'three';
 import type { StripFoundationParams, RebarMeshInfo, RebarInfo } from '@/lib/types';
 import { parseSlabRebar, parseRebar, parseStirrup, gradeLabel } from '@/lib/rebar';
-import { CameraController, InstancedRebarGroup, buildXBarMatrices, buildZBarMatrices } from '@/components/InstancedRebar';
+import { InstancedRebarGroup, buildXBarMatrices, buildZBarMatrices } from '@/components/InstancedRebar';
 import { useFullscreen } from '@/lib/useFullscreen';
 import { S } from '@/lib/constants';
-import { BentRebarEnd, StirrupRing } from '@/components/three';
+import { resolveBarRowCounts } from '@/lib/layout';
+import { StirrupRing } from '@/components/three';
 
 const BEAM_ROW_GAP = 25 * S;
 
 function rowOffsets(rebar: RebarInfo, innerWidthM: number): number[][] {
-  const rowCounts = rebar.perRow?.length ? rebar.perRow : [rebar.count];
+  const rowCounts = resolveBarRowCounts(rebar, innerWidthM);
   return rowCounts.map(count => {
     if (count <= 1) return [0];
     return Array.from({ length: count }, (_, i) => -innerWidthM / 2 + (innerWidthM * i) / (count - 1));
@@ -86,47 +93,25 @@ function StripFoundationScene({
   const jlBeamCenterX = (jlRightOverhangM - jlLeftOverhangM) / 2;
   const jlBarStartX = jlBeamCenterX - jlBeamLengthM / 2 + cover;
   const jlBarEndX = jlBeamCenterX + jlBeamLengthM / 2 - cover;
-  const jlBeamStartX = jlBeamCenterX - jlBeamLengthM / 2;
-  const jlBeamEndX = jlBeamCenterX + jlBeamLengthM / 2;
   const jclNegOverhangM = params.jclEndType === 'bothSides' ? (params.jclOverhang || 0) * S : params.jclEndType === 'oneSide' && params.jclOverhangSide === 'left' ? (params.jclOverhang || 0) * S : 0;
   const jclPosOverhangM = params.jclEndType === 'bothSides' ? (params.jclOverhang || 0) * S : params.jclEndType === 'oneSide' && params.jclOverhangSide === 'right' ? (params.jclOverhang || 0) * S : 0;
   const jclBeamLengthM = widthM + jclNegOverhangM + jclPosOverhangM;
   const jclBeamCenterZ = (jclPosOverhangM - jclNegOverhangM) / 2;
   const jclBarStartZ = jclBeamCenterZ - jclBeamLengthM / 2 + cover;
   const jclBarEndZ = jclBeamCenterZ + jclBeamLengthM / 2 - cover;
-  const jclBeamStartZ = jclBeamCenterZ - jclBeamLengthM / 2;
-  const jclBeamEndZ = jclBeamCenterZ + jclBeamLengthM / 2;
 
   const xStart = -lengthM / 2 + cover;
   const xEnd = lengthM / 2 - cover;
   const zStart = -widthM / 2 + cover;
   const zEnd = widthM / 2 - cover;
 
-  const bottomMatrices = useMemo(() => {
-    const count = Math.max(Math.floor((params.length - 2 * (params.cover || 40)) / bottom.spacing) + 1, 1);
-    const usable = Math.max(xEnd - xStart, 0);
-    const positions = Array.from({ length: count }, (_, i) => xStart + (count > 1 ? usable * i / (count - 1) : usable / 2));
-    return buildZBarMatrices(positions, cover + bottom.diameter * S / 2, zStart, zEnd);
-  }, [params.length, params.cover, bottom.spacing, bottom.diameter, xStart, xEnd, zStart, zEnd, cover]);
+  const bottomStations=useMemo(()=>stripTransverseStations(params,'bottom'),[params]);
+  const topStations=useMemo(()=>stripTransverseStations(params,'top'),[params]);
+  const bottomMatrices = useMemo(() => buildZBarMatrices(bottomStations.base.map(x=>x*S),cover+bottom.diameter*S/2,zStart,zEnd),[bottomStations,cover,bottom.diameter,zStart,zEnd]);
 
-  const distMatrices = useMemo(() => {
-    const count = Math.max(Math.floor((params.width - 2 * (params.cover || 40)) / dist.spacing) + 1, 1);
-    const usable = Math.max(zEnd - zStart, 0);
-    const positions = Array.from({ length: count }, (_, i) => zStart + (count > 1 ? usable * i / (count - 1) : usable / 2))
-      .filter(z => {
-        if (params.supportType !== 'beam') return true;
-        return !supportCenters.some(center => Math.abs(z - center) <= supportWidthM / 2);
-      });
-    return buildXBarMatrices(positions, cover + bottom.diameter * S + dist.diameter * S / 2, xStart, xEnd);
-  }, [params.width, params.cover, params.supportType, dist.spacing, dist.diameter, bottom.diameter, xStart, xEnd, zStart, zEnd, cover, supportCenters, supportWidthM]);
+  const distMatrices = useMemo(() => buildXBarMatrices(stripDistributedPositions(params).map(z=>z*S),cover+bottom.diameter*S+dist.diameter*S/2,xStart,xEnd),[params,cover,bottom.diameter,dist.diameter,xStart,xEnd]);
 
-  const topMatrices = useMemo(() => {
-    if (!top || clearGapM <= 0) return [];
-    const count = Math.max(Math.floor((params.length - 2 * (params.cover || 40)) / top.spacing) + 1, 1);
-    const usable = Math.max(xEnd - xStart, 0);
-    const positions = Array.from({ length: count }, (_, i) => xStart + (count > 1 ? usable * i / (count - 1) : usable / 2));
-    return buildZBarMatrices(positions, baseHM - cover - top.diameter * S / 2, -clearGapM / 2, clearGapM / 2);
-  }, [top, clearGapM, params.length, params.cover, xStart, xEnd, baseHM, cover]);
+  const topMatrices = useMemo(() => !top||clearGapM<=0?[]:buildZBarMatrices(topStations.base.map(x=>x*S),baseHM-cover-top.diameter*S/2,-clearGapM/2,clearGapM/2),[top,clearGapM,topStations,baseHM,cover]);
 
   const topDistMatrices = useMemo(() => {
     if (!topDist || clearGapM <= 0) return [];
@@ -137,33 +122,24 @@ function StripFoundationScene({
 
   const jlBottomRowOffsets = useMemo(() => {
     if (!jlBottom) return [];
-    const usable = Math.max(supportWidthM - 2 * cover, 0);
+    const usable = Math.max(supportWidthM - 2 * cover - (2 * (jlStirrup?.diameter || 0) + Math.max(jlBottom?.diameter || 0, jlTop?.diameter || 0)) * S, 0);
     return rowOffsets(jlBottom, usable);
-  }, [jlBottom, supportWidthM, cover]);
+  }, [jlBottom, jlStirrup?.diameter, jlTop?.diameter, supportWidthM, cover]);
 
   const jlTopRowOffsets = useMemo(() => {
     if (!jlTop) return [];
-    const usable = Math.max(supportWidthM - 2 * cover, 0);
+    const usable = Math.max(supportWidthM - 2 * cover - (2 * (jlStirrup?.diameter || 0) + Math.max(jlBottom?.diameter || 0, jlTop?.diameter || 0)) * S, 0);
     return rowOffsets(jlTop, usable);
-  }, [jlTop, supportWidthM, cover]);
-
-  const jlBottomMatrices = useMemo(() => {
-    if (!jlBottom || params.supportType !== 'beam') return [];
-    return jlBottomRowOffsets.flatMap((row, rowIdx) => {
-      const yLevel = baseHM + cover + jlBottom.diameter * S / 2 + rowIdx * (jlBottom.diameter * S + BEAM_ROW_GAP);
-      const zPositions = supportCenters.flatMap(center => row.map(offset => center + offset));
-      return buildXBarMatrices(zPositions, yLevel, jlBarStartX, jlBarEndX);
-    });
-  }, [jlBottom, params.supportType, jlBottomRowOffsets, baseHM, cover, supportCenters, jlBarStartX, jlBarEndX]);
+  }, [jlTop, jlBottom?.diameter, jlStirrup?.diameter, supportWidthM, cover]);
 
   const jlTopMatrices = useMemo(() => {
     if (!jlTop || params.supportType !== 'beam') return [];
     return jlTopRowOffsets.flatMap((row, rowIdx) => {
-      const yLevel = baseHM + supportHM - cover - jlTop.diameter * S / 2 - rowIdx * (jlTop.diameter * S + BEAM_ROW_GAP);
+      const yLevel = baseHM + supportHM - cover - (jlStirrup?.diameter || 0) * S - jlTop.diameter * S / 2 - rowIdx * (jlTop.diameter * S + BEAM_ROW_GAP);
       const zPositions = supportCenters.flatMap(center => row.map(offset => center + offset));
       return buildXBarMatrices(zPositions, yLevel, jlBarStartX, jlBarEndX);
     });
-  }, [jlTop, params.supportType, jlTopRowOffsets, baseHM, supportHM, cover, supportCenters, jlBarStartX, jlBarEndX]);
+  }, [jlTop, jlStirrup?.diameter, params.supportType, jlTopRowOffsets, baseHM, supportHM, cover, supportCenters, jlBarStartX, jlBarEndX]);
 
   const jlStirrupPositions = useMemo(() => {
     if (!jlStirrup || params.supportType !== 'beam') return [];
@@ -174,33 +150,24 @@ function StripFoundationScene({
 
   const jclBottomRowOffsets = useMemo(() => {
     if (!jclBottom || !params.jclB) return [];
-    const usable = Math.max(params.jclB * S - 2 * cover, 0);
+    const usable = Math.max(params.jclB * S - 2 * cover - (2 * (jclStirrup?.diameter || 0) + Math.max(jclBottom?.diameter || 0, jclTop?.diameter || 0)) * S, 0);
     return rowOffsets(jclBottom, usable);
-  }, [jclBottom, params.jclB, cover]);
+  }, [jclBottom, jclTop?.diameter, jclStirrup?.diameter, params.jclB, cover]);
 
   const jclTopRowOffsets = useMemo(() => {
     if (!jclTop || !params.jclB) return [];
-    const usable = Math.max(params.jclB * S - 2 * cover, 0);
+    const usable = Math.max(params.jclB * S - 2 * cover - (2 * (jclStirrup?.diameter || 0) + Math.max(jclBottom?.diameter || 0, jclTop?.diameter || 0)) * S, 0);
     return rowOffsets(jclTop, usable);
-  }, [jclTop, params.jclB, cover]);
-
-  const jclBottomMatrices = useMemo(() => {
-    if (!params.hasJcl || !jclBottom) return [];
-    return jclBottomRowOffsets.flatMap((row, rowIdx) => {
-      const yLevel = baseHM + cover + jclBottom.diameter * S / 2 + rowIdx * (jclBottom.diameter * S + BEAM_ROW_GAP);
-      const xPositions = jclCentersX.flatMap(center => row.map(offset => center + offset));
-      return buildZBarMatrices(xPositions, yLevel, jclBarStartZ, jclBarEndZ);
-    });
-  }, [params.hasJcl, jclBottom, jclCentersX, jclBottomRowOffsets, baseHM, cover, jclBarStartZ, jclBarEndZ]);
+  }, [jclTop, jclBottom?.diameter, jclStirrup?.diameter, params.jclB, cover]);
 
   const jclTopMatrices = useMemo(() => {
     if (!params.hasJcl || !jclTop || !params.jclH) return [];
     return jclTopRowOffsets.flatMap((row, rowIdx) => {
-      const yLevel = baseHM + jclHM - cover - jclTop.diameter * S / 2 - rowIdx * (jclTop.diameter * S + BEAM_ROW_GAP);
+      const yLevel = baseHM + jclHM - cover - (jclStirrup?.diameter || 0) * S - jclTop.diameter * S / 2 - (jlTop ? (jlTop.diameter + jclTop.diameter) * S / 2 + .002 : 0) - rowIdx * (jclTop.diameter * S + BEAM_ROW_GAP);
       const xPositions = jclCentersX.flatMap(center => row.map(offset => center + offset));
       return buildZBarMatrices(xPositions, yLevel, jclBarStartZ, jclBarEndZ);
     });
-  }, [params.hasJcl, params.jclH, jclTop, jclHM, jclCentersX, jclTopRowOffsets, baseHM, cover, jclBarStartZ, jclBarEndZ]);
+  }, [params.hasJcl, params.jclH, jclTop, jclStirrup?.diameter, jlTop, jclHM, jclCentersX, jclTopRowOffsets, baseHM, cover, jclBarStartZ, jclBarEndZ]);
 
   const jclStirrupPositions = useMemo(() => {
     if (!params.hasJcl || !jclStirrup) return [];
@@ -209,21 +176,8 @@ function StripFoundationScene({
     return Array.from({ length: count }, (_, i) => jclBarStartZ + i * spacingM).filter(z => z <= jclBarEndZ + 1e-6);
   }, [params.hasJcl, jclStirrup, jclBarStartZ, jclBarEndZ]);
 
-  const localBottomMatrices = useMemo(() => {
-    if (!hasLocalOverride || !localBottom || localLenM <= 0) return [];
-    const count = Math.max(Math.floor(localLenM / (localBottom.spacing * S)) + 1, 1);
-    const positions = Array.from({ length: count }, (_, i) => localStartX + (count > 1 ? localLenM * i / (count - 1) : localLenM / 2));
-    return buildZBarMatrices(positions, cover + localBottom.diameter * S / 2, zStart, zEnd);
-  }, [hasLocalOverride, localBottom, localLenM, localStartX, cover, zStart, zEnd]);
-
-  const localTopMatrices = useMemo(() => {
-    if (!hasLocalOverride || !localTop || localLenM <= 0) return [];
-    const count = Math.max(Math.floor(localLenM / (localTop.spacing * S)) + 1, 1);
-    const positions = Array.from({ length: count }, (_, i) => localStartX + (count > 1 ? localLenM * i / (count - 1) : localLenM / 2));
-    const topZStart = clearGapM > 0 ? -clearGapM / 2 : zStart;
-    const topZEnd = clearGapM > 0 ? clearGapM / 2 : zEnd;
-    return buildZBarMatrices(positions, baseHM - cover - localTop.diameter * S / 2, topZStart, topZEnd);
-  }, [hasLocalOverride, localTop, localLenM, localStartX, clearGapM, zStart, zEnd, baseHM, cover]);
+  const localBottomMatrices=useMemo(()=>!localBottom?[]:buildZBarMatrices(bottomStations.local.map(x=>x*S),cover+localBottom.diameter*S/2,zStart,zEnd),[localBottom,bottomStations,cover,zStart,zEnd]);
+  const localTopMatrices=useMemo(()=>!localTop?[]:buildZBarMatrices(topStations.local.map(x=>x*S),baseHM-cover-localTop.diameter*S/2,clearGapM>0?-clearGapM/2:zStart,clearGapM>0?clearGapM/2:zEnd),[localTop,topStations,baseHM,cover,clearGapM,zStart,zEnd]);
 
   const bottomInfo: RebarMeshInfo = { type: 'stripBottom', label: '底部横向受力筋', detail: `${params.bottomBar} · ${gradeLabel(bottom.grade)} Φ${bottom.diameter}@${bottom.spacing}` };
   const distInfo: RebarMeshInfo = { type: 'stripDist', label: '底部分布筋', detail: `${params.distBar} · ${gradeLabel(dist.grade)} Φ${dist.diameter}@${dist.spacing}` };
@@ -356,19 +310,14 @@ function StripFoundationScene({
         />
       )}
 
-      {jlBottomInfo && (
-        <InstancedRebarGroup
-          matrices={jlBottomMatrices}
-          radius={jlBottom!.diameter * S / 2}
-          length={Math.max(jlBarEndX - jlBarStartX, 0)}
-          color="#8B4513"
-          hiColor="#A65B2A"
-          info={jlBottomInfo}
-          selected={selected?.type === 'stripJlBottom'}
-          onSelect={onSelect}
-          visible={visibleGroups.has('jlBottom')}
-        />
-      )}
+      {jlBottomInfo && jlBottomRowOffsets.map((row,rowIdx)=>{
+        const y=baseHM+cover+(jlStirrup?.diameter||0)*S+jlBottom!.diameter*S/2+rowIdx*(jlBottom!.diameter*S+BEAM_ROW_GAP);
+        const bend=Math.max(jlBottom!.diameter*12*S,.12);
+        return <BentBarSet key={`jl-bottom-row-${rowIdx}`} positions={supportCenters.flatMap(center=>row.map(offset=>center+offset))} axis="x" start={jlBarStartX} end={jlBarEndX} y={y} diameter={jlBottom!.diameter}
+          bend={rowIdx===0&&(params.jlEndType==='bothSides'||params.jlEndType==='oneSide'&&params.jlOverhangSide==='left')?bend:0}
+          rightBend={rowIdx===0&&(params.jlEndType==='bothSides'||params.jlEndType==='oneSide'&&params.jlOverhangSide!=='left')?bend:0}
+          color="#8B4513" hiColor="#A65B2A" info={jlBottomInfo} selected={selected?.type==='stripJlBottom'} onSelect={onSelect} visible={visibleGroups.has('jlBottom')} />;
+      })}
 
       {jlTopInfo && (
         <InstancedRebarGroup
@@ -398,67 +347,21 @@ function StripFoundationScene({
               info={jlStirrupInfo}
               selected={selected?.type === 'stripJlStirrup'}
               onSelect={onSelect}
-              cover={cover + (jlStirrup!.diameter * S) / 2}
+              cover={cover}
               legs={jlStirrup!.legs}
             />
           ))}
         </group>
       ))}
 
-      {jlBottomInfo && visibleGroups.has('jlBottom') && (params.jlEndType || 'none') !== 'none' && jlBottomRowOffsets[0]?.flatMap((offset, idx) => supportCenters.flatMap((center, centerIdx) => {
-        const yLevel = baseHM + cover + jlBottom!.diameter * S / 2;
-        const zPos = center + offset;
-        const leftHook = params.jlEndType === 'bothSides' || (params.jlEndType === 'oneSide' && params.jlOverhangSide === 'left');
-        const rightHook = params.jlEndType === 'bothSides' || (params.jlEndType === 'oneSide' && params.jlOverhangSide === 'right');
-        return [
-          leftHook ? (
-            <BentRebarEnd
-              key={`jl-bottom-left-hook-${centerIdx}-${idx}`}
-              position={[jlBeamStartX + cover, yLevel, zPos]}
-              straightLen={0}
-              bendLen={Math.max((jlBottom!.diameter * 12) * S, 0.12)}
-              diameter={jlBottom!.diameter}
-              direction="up"
-              color="#8B4513"
-              hiColor="#A65B2A"
-              info={jlBottomInfo}
-              selected={selected?.type === 'stripJlBottom'}
-              onSelect={onSelect}
-              xDir={-1}
-            />
-          ) : null,
-          rightHook ? (
-            <BentRebarEnd
-              key={`jl-bottom-right-hook-${centerIdx}-${idx}`}
-              position={[jlBeamEndX - cover, yLevel, zPos]}
-              straightLen={0}
-              bendLen={Math.max((jlBottom!.diameter * 12) * S, 0.12)}
-              diameter={jlBottom!.diameter}
-              direction="up"
-              color="#8B4513"
-              hiColor="#A65B2A"
-              info={jlBottomInfo}
-              selected={selected?.type === 'stripJlBottom'}
-              onSelect={onSelect}
-              xDir={1}
-            />
-          ) : null,
-        ];
-      }))}
-
-      {jclBottomInfo && (
-        <InstancedRebarGroup
-          matrices={jclBottomMatrices}
-          radius={jclBottom!.diameter * S / 2}
-          length={Math.max(jclBarEndZ - jclBarStartZ, 0)}
-          color="#6B3F2A"
-          hiColor="#8A5A40"
-          info={jclBottomInfo}
-          selected={selected?.type === 'stripJclBottom'}
-          onSelect={onSelect}
-          visible={visibleGroups.has('jclBottom')}
-        />
-      )}
+      {jclBottomInfo && jclBottomRowOffsets.map((row,rowIdx)=>{
+        const y=baseHM+cover+(jclStirrup?.diameter||0)*S+jclBottom!.diameter*S/2+(jlBottom?(jlBottom.diameter+jclBottom!.diameter)*S/2+.002:0)+rowIdx*(jclBottom!.diameter*S+BEAM_ROW_GAP);
+        const bend=Math.max(jclBottom!.diameter*12*S,.12);
+        return <BentBarSet key={`jcl-bottom-row-${rowIdx}`} positions={jclCentersX.flatMap(center=>row.map(offset=>center+offset))} axis="z" start={jclBarStartZ} end={jclBarEndZ} y={y} diameter={jclBottom!.diameter}
+          bend={rowIdx===0&&(params.jclEndType==='bothSides'||params.jclEndType==='oneSide'&&params.jclOverhangSide==='left')?bend:0}
+          rightBend={rowIdx===0&&(params.jclEndType==='bothSides'||params.jclEndType==='oneSide'&&params.jclOverhangSide!=='left')?bend:0}
+          color="#6B3F2A" hiColor="#8A5A40" info={jclBottomInfo} selected={selected?.type==='stripJclBottom'} onSelect={onSelect} visible={visibleGroups.has('jclBottom')} />;
+      })}
 
       {jclTopInfo && (
         <InstancedRebarGroup
@@ -488,55 +391,12 @@ function StripFoundationScene({
               info={jclStirrupInfo}
               selected={selected?.type === 'stripJclStirrup'}
               onSelect={onSelect}
-              cover={cover + (jclStirrup!.diameter * S) / 2}
+              cover={cover}
               legs={jclStirrup!.legs}
             />
           ))}
         </group>
       ))}
-
-      {jclBottomInfo && visibleGroups.has('jclBottom') && (params.jclEndType || 'none') !== 'none' && jclBottomRowOffsets[0]?.flatMap((rowOffset, idx) => jclCentersX.flatMap((centerX, beamIdx) => {
-        const yLevel = baseHM + cover + jclBottom!.diameter * S / 2;
-        const xPos = centerX + rowOffset;
-        const negHook = params.jclEndType === 'bothSides' || (params.jclEndType === 'oneSide' && params.jclOverhangSide === 'left');
-        const posHook = params.jclEndType === 'bothSides' || (params.jclEndType === 'oneSide' && params.jclOverhangSide === 'right');
-        return [
-          negHook ? (
-            <BentRebarEnd
-              key={`jcl-bottom-neg-hook-${beamIdx}-${idx}`}
-              position={[xPos, yLevel, jclBeamStartZ + cover]}
-              straightLen={0}
-              bendLen={Math.max((jclBottom!.diameter * 12) * S, 0.12)}
-              diameter={jclBottom!.diameter}
-              direction="up"
-              horizontalAxis="z"
-              color="#6B3F2A"
-              hiColor="#8A5A40"
-              info={jclBottomInfo}
-              selected={selected?.type === 'stripJclBottom'}
-              onSelect={onSelect}
-              xDir={-1}
-            />
-          ) : null,
-          posHook ? (
-            <BentRebarEnd
-              key={`jcl-bottom-pos-hook-${beamIdx}-${idx}`}
-              position={[xPos, yLevel, jclBeamEndZ - cover]}
-              straightLen={0}
-              bendLen={Math.max((jclBottom!.diameter * 12) * S, 0.12)}
-              diameter={jclBottom!.diameter}
-              direction="up"
-              horizontalAxis="z"
-              color="#6B3F2A"
-              hiColor="#8A5A40"
-              info={jclBottomInfo}
-              selected={selected?.type === 'stripJclBottom'}
-              onSelect={onSelect}
-              xDir={1}
-            />
-          ) : null,
-        ];
-      }))}
 
       {overrideInfo && localBottom && (
         <InstancedRebarGroup
@@ -613,8 +473,8 @@ export default function StripFoundationViewer({ params }: { params: StripFoundat
   }, [params.length, params.width, params.supportHeight]);
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div data-viewer className="rv-viewer">
+      <div className="rv-viewer-toolbar flex flex-wrap items-center gap-2">
         {[
           ['bottom', '底横'],
           ['dist', '底分'],
@@ -634,47 +494,20 @@ export default function StripFoundationViewer({ params }: { params: StripFoundat
         ))}
       </div>
 
-      <div ref={containerRef} className={`relative w-full bg-surface overflow-hidden ${containerClass}`}>
+      <div ref={containerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${containerClass}`}>
         {selected && <InfoTooltip info={selected} />}
 
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5">
-          {[
+        <ViewerControls views={[
             { name: '正面', pos: [0, camDist * 0.14, camDist] as [number, number, number] },
             { name: '侧面', pos: [camDist, camDist * 0.14, 0] as [number, number, number] },
             { name: '俯视', pos: [0, camDist * 1.15, 0.1] as [number, number, number] },
             { name: '透视', pos: [camDist * 0.58, camDist * 0.28, camDist * 0.72] as [number, number, number] },
-          ].map(view => (
-            <button
-              key={view.name}
-              onClick={() => setCameraTarget(view.pos)}
-              className="rounded-md border border-gray-200/60 bg-white/80 px-2 py-1 text-[11px] font-medium text-muted backdrop-blur-sm transition-colors hover:bg-white hover:text-primary cursor-pointer"
-            >
-              {view.name}
-            </button>
-          ))}
-          <div className="ml-1 flex items-center gap-1 rounded-md border border-gray-200/60 bg-white/80 px-2 py-1 backdrop-blur-sm">
-            <span className="text-[11px] text-muted">透明</span>
-            <input
-              type="range"
-              min={0}
-              max={0.45}
-              step={0.02}
-              value={concreteOpacity}
-              onChange={e => setConcreteOpacity(parseFloat(e.target.value))}
-              className="w-14 accent-accent"
-            />
-          </div>
-          <button
-            onClick={toggle}
-            className="ml-1 rounded-md border border-gray-200/60 bg-white/80 p-1 text-muted backdrop-blur-sm transition-colors hover:bg-white hover:text-primary cursor-pointer"
-            title={isFullscreen ? '退出全屏' : '全屏查看'}
-          >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-        </div>
+          ]} onView={setCameraTarget} opacity={concreteOpacity} onOpacity={setConcreteOpacity}
+          fullscreen={isFullscreen} onFullscreen={toggle} />
 
         <Canvas camera={{ position: [camDist * 0.58, camDist * 0.28, camDist * 0.72], fov: 40 }} onPointerMissed={() => setSelected(null)}>
-          <CameraController targetPosition={cameraTarget} />
+          <color attach="background" args={['#071725']} />
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[camDist * 0.58, camDist * 0.28, camDist * 0.72]} center={[0, 0, 0]} bounds={[params.length * S, (params.h + params.supportHeight) * S * 2, params.width * S]} />
           <StripFoundationScene
             params={params}
             selected={selected}

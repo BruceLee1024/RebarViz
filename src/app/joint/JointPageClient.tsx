@@ -1,5 +1,11 @@
 'use client';
 
+import { CompliancePanel } from '@/components/CompliancePanel';
+import { checkCompliance } from '@/lib/compliance';
+import { FormworkCalc } from '@/components/FormworkCalc';
+
+import { WorkbenchLayout, WorkbenchTabs } from '@/components/WorkbenchLayout';
+
 import { useState, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -15,7 +21,6 @@ import type { ConcreteGrade, SeismicGrade } from '@/lib/anchor';
 import { LazyAISidebar as AISidebar } from '@/components/LazyAISidebar';
 import { buildJointContext } from '@/lib/ai-context';
 import { decodeSharedParam } from '@/lib/share-params';
-import { Sparkles } from 'lucide-react';
 
 const JointViewer = dynamic(() => import('@/components/JointViewer'), {
   ssr: false,
@@ -42,6 +47,7 @@ export function JointPageClient() {
     return DEFAULT;
   });
   const aiMessage = searchParams.get('ai') || undefined;
+  const [dataTab, setDataTab] = useState<'guide' | 'formwork' | 'compliance'>('guide');
   const [showAI, setShowAI] = useState(!!aiMessage);
 
   const update = (patch: Partial<JointParams>) => setParams(p => ({ ...p, ...patch }));
@@ -60,32 +66,26 @@ export function JointPageClient() {
   }), [params]);
 
   return (
-    <main className="px-4 py-4">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 左栏：参数输入 */}
-        <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-primary">参数输入</h2>
-              <div className="flex items-center gap-2">
-                <ResetButton onClick={() => setParams(DEFAULT)} />
-                <ShareButton params={params} />
-              </div>
-            </div>
-
+    <WorkbenchLayout
+      title="节点配筋工作台"
+      summary={<>梁 {params.beamB} × {params.beamH} mm<span>·</span>柱 {params.colB} × {params.colH} mm</>}
+      actions={<ShareButton params={params} className="rv-button rv-share-button" />}
+      inspector={
+        <>
+          <div className="rv-inspector-tools"><span>快速示例</span><ResetButton onClick={() => setParams(DEFAULT)} /></div>
+          <div className="rv-parameter-form">
             <div className="mb-4">
-              <label className="text-xs text-muted mb-2 block">快速示例</label>
+
               <div className="flex flex-wrap gap-1.5">
                 {presetList.map(({ key, label, dot }) => (
                   <button key={key} onClick={() => setParams({ ...JOINT_PRESETS[key] })}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    className="rv-preset-button">
                     <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
               </div>
             </div>
-
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-muted mb-1 block">节点类型</label>
@@ -110,7 +110,6 @@ export function JointPageClient() {
                 </div>
               </div>
             </div>
-
             <Section title="材料与构造">
               <SelectField label="混凝土等级" value={params.concreteGrade} onChange={v => update({ concreteGrade: v as ConcreteGrade })}
                 options={CONCRETE_GRADES.map(g => ({ value: g, label: g }))} />
@@ -118,67 +117,51 @@ export function JointPageClient() {
                 options={SEISMIC_GRADES.map(g => ({ value: g, label: g }))} />
               <NumField label="保护层 (mm)" value={params.cover} onChange={v => update({ cover: v })} min={15} max={50} />
             </Section>
-
             <Section title="柱参数" defaultOpen>
               <NumField label="柱宽 b (mm)" value={params.colB} onChange={v => update({ colB: v })} error={errors.colB?.message} min={200} max={1200} />
               <NumField label="柱高 h (mm)" value={params.colH} onChange={v => update({ colH: v })} error={errors.colH?.message} min={200} max={1200} />
               <Field label="柱纵筋" value={params.colMain} onChange={v => update({ colMain: v })} placeholder="如: 12C25" error={errors.colMain?.message} />
               <Field label="柱箍筋" value={params.colStirrup} onChange={v => update({ colStirrup: v })} placeholder="如: A10@100/200(4)" error={errors.colStirrup?.message} />
             </Section>
-
             <Section title="梁参数" defaultOpen>
               <NumField label="梁宽 b (mm)" value={params.beamB} onChange={v => update({ beamB: v })} error={errors.beamB?.message} min={150} max={800} />
               <NumField label="梁高 h (mm)" value={params.beamH} onChange={v => update({ beamH: v })} error={errors.beamH?.message} min={200} max={1200} />
               <Field label="梁上部筋" value={params.beamTop} onChange={v => update({ beamTop: v })} placeholder="如: 4C25" error={errors.beamTop?.message} />
               <Field label="梁下部筋" value={params.beamBottom} onChange={v => update({ beamBottom: v })} placeholder="如: 4C25" error={errors.beamBottom?.message} />
               <Field label="梁箍筋" value={params.beamStirrup} onChange={v => update({ beamStirrup: v })} placeholder="如: A8@100/200(2)" error={errors.beamStirrup?.message} />
-            </Section>
-          </div>
-
-          <Legend items={[
-            { color: '#C0392B', label: '柱纵筋 / 梁上部筋' },
-            { color: '#2980B9', label: '梁下部筋' },
-            { color: '#E67E22', label: '节点区箍筋（加密）' },
-            { color: '#27AE60', label: '梁箍筋 / 柱箍筋' },
-            { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
-          ]} />
-        </div>
-
-        {/* 中栏：3D模型 */}
-        <div className={`${showAI ? 'lg:col-span-6' : 'lg:col-span-9'} min-w-0 transition-all`}>
-          <div className="relative">
-            <JointViewer params={params} />
-            <button onClick={() => setShowAI(a => !a)}
-              className={`absolute top-3 right-3 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 shadow-sm ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100 hover:shadow-md'}`}>
-              <Sparkles className="w-3.5 h-3.5" />
-              AI 助手
-            </button>
-          </div>
-        </div>
-
-        {/* 右栏：AI 侧边栏（可收起） */}
-        {showAI && (
-          <div className="lg:col-span-3">
-            <AISidebar
-              componentType="joint"
-              currentParams={params}
-              onApplyParams={(p) => update(p as Partial<JointParams>)}
-              context={aiContext}
-              notationSlot={<JointExplain params={params} />}
-              initialMessage={aiMessage}
-              onNavigateComponent={(type: ComponentType, message?: string) => {
-                const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
-                router.push(`/${type}${encoded}`);
-              }}
-              onApplyPreset={(preset) => {
-                if (preset in JOINT_PRESETS) setParams({ ...JOINT_PRESETS[preset as keyof typeof JOINT_PRESETS] });
-              }}
-              onGetCurrentState={() => aiContext}
-              onResetParams={() => setParams({ ...JOINT_PRESETS.middleBent })}
-            />
-          </div>
-        )}
-      </div>
-    </main>
+            </Section></div><Section title="图例说明"><Legend items={[
+              { color: '#C0392B', label: '柱纵筋 / 梁上部筋' },
+              { color: '#2980B9', label: '梁下部筋' },
+              { color: '#E67E22', label: '节点区箍筋（加密）' },
+              { color: '#27AE60', label: '梁箍筋 / 柱箍筋' },
+              { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
+            ]} /></Section>
+        </>}
+      viewer={<JointViewer params={params} />}
+      analysisTabs={<WorkbenchTabs tabs={[{ key: "guide", label: "识图说明" }, { key: "formwork", label: "模板量" }, { key: "compliance", label: "构造检查" }]} active={dataTab} onChange={setDataTab} />}
+      analysis={<>
+        {dataTab === 'guide' && <JointExplain params={params} />}
+        {dataTab === 'compliance' && <CompliancePanel results={checkCompliance('joint', params)} />}
+        <div hidden={dataTab !== 'formwork'}><FormworkCalc componentType="joint" params={params} /></div>
+      </>}
+      assistant={showAI ? <AISidebar
+        componentType="joint"
+        currentParams={params}
+        onApplyParams={(p) => update(p as Partial<JointParams>)}
+        context={aiContext}
+        notationSlot={<JointExplain params={params} />}
+        initialMessage={aiMessage}
+        onNavigateComponent={(type: ComponentType, message?: string) => {
+          const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
+          router.push(`/${type}${encoded}`);
+        }}
+        onApplyPreset={(preset) => {
+          if (preset in JOINT_PRESETS) setParams({ ...JOINT_PRESETS[preset as keyof typeof JOINT_PRESETS] });
+        }}
+        onGetCurrentState={() => aiContext}
+        onResetParams={() => setParams({ ...JOINT_PRESETS.middleBent })}
+      /> : undefined}
+      onAssistantToggle={() => setShowAI(value => !value)}
+    />
   );
 }

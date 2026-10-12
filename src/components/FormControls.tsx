@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 export function Field({ label, value, onChange, placeholder, error, highlightKey, onHover, highlighted, complianceStatus, complianceMessage }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string; error?: string | null;
   highlightKey?: string; onHover?: (key: string | null) => void;
   highlighted?: boolean; complianceStatus?: 'pass' | 'warn' | 'fail'; complianceMessage?: string;
 }) {
+  const inputId = useId();
   const borderClass = error
     ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-500/20'
     : complianceStatus === 'fail'
@@ -20,8 +21,8 @@ export function Field({ label, value, onChange, placeholder, error, highlightKey
       onMouseEnter={() => highlightKey && onHover?.(highlightKey)}
       onMouseLeave={() => onHover?.(null)}
     >
-      <label className="text-xs text-gray-500 mb-1 block">{label}</label>
-      <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+      <label htmlFor={inputId} className="text-xs text-gray-500 mb-1 block">{label}</label>
+      <input id={inputId} type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className={`w-full px-3 py-2 border rounded-lg text-sm outline-none transition-colors bg-white text-gray-800 placeholder-gray-400 ${borderClass}`} />
       {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
       {!error && complianceStatus === 'fail' && complianceMessage && <p className="text-[11px] text-red-500 mt-1">{complianceMessage}</p>}
@@ -35,6 +36,7 @@ export function NumField({ label, value, onChange, error, min, max, highlightKey
   highlightKey?: string; onHover?: (key: string | null) => void;
   highlighted?: boolean; complianceStatus?: 'pass' | 'warn' | 'fail'; complianceMessage?: string;
 }) {
+  const inputId = useId();
   const borderClass = error
     ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-500/20'
     : complianceStatus === 'fail'
@@ -48,8 +50,8 @@ export function NumField({ label, value, onChange, error, min, max, highlightKey
       onMouseEnter={() => highlightKey && onHover?.(highlightKey)}
       onMouseLeave={() => onHover?.(null)}
     >
-      <label className="text-xs text-gray-500 mb-1 block">{label}</label>
-      <input type="number" value={value} min={min} max={max}
+      <label htmlFor={inputId} className="text-xs text-gray-500 mb-1 block">{label}</label>
+      <input id={inputId} type="number" value={value} min={min} max={max}
         onChange={e => onChange(parseInt(e.target.value) || 0)}
         className={`w-full px-3 py-2 border rounded-lg text-sm outline-none transition-colors bg-white text-gray-800 ${borderClass}`} />
       {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
@@ -93,10 +95,11 @@ export function SelectField({ label, value, onChange, options }: {
   label: string; value: string; onChange: (v: string) => void;
   options: { value: string; label: string }[];
 }) {
+  const inputId = useId();
   return (
     <div>
-      <label className="text-xs text-gray-500 mb-1 block">{label}</label>
-      <select value={value} onChange={e => onChange(e.target.value)}
+      <label htmlFor={inputId} className="text-xs text-gray-500 mb-1 block">{label}</label>
+      <select id={inputId} value={value} onChange={e => onChange(e.target.value)}
         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-colors bg-white text-gray-800 cursor-pointer">
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
@@ -114,6 +117,7 @@ export function Section({ title, defaultOpen = false, children }: {
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between px-3 py-2.5 cursor-pointer group"
         type="button"
+        aria-expanded={open}
       >
         <span className="text-xs font-semibold text-primary">{title}</span>
         <svg

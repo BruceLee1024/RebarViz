@@ -937,7 +937,7 @@ export function determineColFoundAnchor(h: number, cover: number, d: number, laE
 // 22. 箍筋下料长度精确计算 — 22G101 / GB50010
 // ═══════════════════════════════════════════════════════════════════
 
-/** 箍筋135°弯钩直段长度: max(10d, 75mm) — GB50010 §8.3.2 / 22G101 */
+/** 抗震箍筋弯后平直段长度（每端）: max(10d, 75mm) — GB50666 §5.3.6 / 22G101 */
 export const STIRRUP_HOOK_FACTOR = 10;
 export const STIRRUP_HOOK_MIN = 75;
 

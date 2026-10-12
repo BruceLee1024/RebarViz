@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
+import './workbench.css';
 import { Header } from '@/components/Header';
 import { TrialGate } from '@/components/TrialGate';
 

@@ -28,6 +28,7 @@ export interface StirrupInfo {
 export type HaunchType = 'none' | 'horizontal' | 'vertical';
 
 export interface BeamParams {
+  beamKind?: 'frame' | 'coupling';
   id: string;
   b: number;
   h: number;
@@ -46,7 +47,7 @@ export interface BeamParams {
   // 加腋
   haunchType: HaunchType;       // 加腋类型
   haunchLength: number;         // 加腋长度 c1 (mm)
-  haunchHeight: number;         // 加腋高度 (mm)，水平加腋=梁高方向增加量，竖向加腋=梁宽方向增加量
+  haunchHeight: number;         // 加腋高度 (mm)，水平加腋=单侧宽度增加量，竖向加腋=梁底高度增加量
   haunchSide: 'both' | 'left' | 'right'; // 加腋位置
   leftSupport2?: string;  // 第二排左支座负筋，如 2C25（伸入跨内 ln/4）
   rightSupport2?: string; // 第二排右支座负筋

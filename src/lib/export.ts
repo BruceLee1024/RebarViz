@@ -94,7 +94,7 @@ export function exportToCSV(result: CalcResult, meta: ExportMeta = {}): void {
 /**
  * 导出为打印友好的 HTML（可另存为 PDF）
  */
-export function exportToPrintHTML(result: CalcResult, meta: ExportMeta = {}): void {
+export function exportToPrintHTML(result: CalcResult, meta: ExportMeta = {}): boolean {
   const summary = buildSummary(result.items);
   const totalWeight = summary.reduce((s, r) => s + r.totalWeightKg, 0);
   
@@ -255,7 +255,9 @@ export function exportToPrintHTML(result: CalcResult, meta: ExportMeta = {}): vo
   if (win) {
     win.document.write(html);
     win.document.close();
+    return true;
   }
+  return false;
 }
 
 /**

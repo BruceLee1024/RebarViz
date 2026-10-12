@@ -42,7 +42,7 @@ export function buildBeamContext(p: BeamParams): string {
 右支座负筋: ${p.rightSupport || '无'}
 腰筋/抗扭筋: ${p.sideBar || '无'}${p.sideBar ? `，拉筋: ${p.tieBar || '自动(b≤350→A6)'}` : ''}
 混凝土等级: ${p.concreteGrade}(ft=${ft}MPa)，抗震等级: ${p.seismicGrade}
-保护层: ${cover}mm，梁净跨: ${p.spanLength}mm，支座柱宽 hc: ${p.hc}mm，支座柱截面深度: ${p.supportDepth || 600}mm${p.haunchType && p.haunchType !== 'none' ? `\n加腋: ${p.haunchType === 'horizontal' ? '水平' : '竖向'}加腋，c₁=${p.haunchLength}mm，${p.haunchType === 'horizontal' ? '高度' : '宽度'}=${p.haunchHeight}mm，${p.haunchSide === 'both' ? '两端' : p.haunchSide === 'left' ? '左端' : '右端'}` : ''}`;
+保护层: ${cover}mm，梁净跨: ${p.spanLength}mm，支座柱宽 hc: ${p.hc}mm，支座柱截面深度: ${p.supportDepth || 600}mm${p.haunchType && p.haunchType !== 'none' ? `\n加腋: ${p.haunchType === 'horizontal' ? '水平' : '竖向'}加腋，c₁=${p.haunchLength}mm，${p.haunchType === 'horizontal' ? '单侧宽度' : '高度'}=${p.haunchHeight}mm，${p.haunchSide === 'both' ? '两端' : p.haunchSide === 'left' ? '左端' : '右端'}` : ''}`;
 }
 
 export function buildColumnContext(p: ColumnParams): string {

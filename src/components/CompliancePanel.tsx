@@ -51,7 +51,7 @@ export function CompliancePanel({ results, compact }: CompliancePanelProps) {
       return (
         <div className="flex items-center gap-2 px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200">
           <ShieldCheck className="w-4 h-4 text-emerald-500" />
-          <span className="text-xs font-medium text-emerald-700">配筋满足规范要求</span>
+          <span className="text-xs font-medium text-emerald-700">已实现检查项通过</span>
         </div>
       );
     }
@@ -112,7 +112,7 @@ export function CompliancePanel({ results, compact }: CompliancePanelProps) {
             )}
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-gray-800">规范校验</h3>
+            <h3 className="text-sm font-semibold text-gray-800">构造检查</h3>
             <p className="text-[11px] text-gray-400">GB50010-2010 & 22G101</p>
           </div>
         </div>
@@ -134,7 +134,7 @@ export function CompliancePanel({ results, compact }: CompliancePanelProps) {
           {summary.allPass && (
             <div className="flex items-center gap-1">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-xs text-gray-600">全部通过</span>
+              <span className="text-xs text-gray-600">检查项通过</span>
             </div>
           )}
         </div>
@@ -144,8 +144,8 @@ export function CompliancePanel({ results, compact }: CompliancePanelProps) {
       {summary.allPass ? (
         <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 text-center">
           <ShieldCheck className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-          <p className="text-sm font-medium text-emerald-700">配筋满足规范要求</p>
-          <p className="text-xs text-emerald-600 mt-1">已检查配筋率、箍筋构造等关键指标</p>
+          <p className="text-sm font-medium text-emerald-700">已实现检查项通过</p>
+          <p className="text-xs text-emerald-600 mt-1">检查范围以当前构件已实现的规则为准</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -191,7 +191,7 @@ export function CompliancePanel({ results, compact }: CompliancePanelProps) {
       {/* 说明 */}
       <div className="flex items-start gap-2 px-3 py-2 bg-gray-50 rounded-lg text-[11px] text-gray-500">
         <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        <span>校验基于 GB50010-2010《混凝土结构设计规范》和 22G101 系列图集，仅供参考</span>
+        <span>当前仅覆盖已实现的尺寸、配筋率及局部构造规则，未完成荷载承载力、全部锚固与钢筋碰撞检查。</span>
       </div>
     </div>
   );
@@ -208,7 +208,7 @@ export function ComplianceBadge({ results }: { results: ComplianceResult[] }) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[10px] font-medium">
         <ShieldCheck className="w-3 h-3" />
-        合规
+        已检通过
       </span>
     );
   }

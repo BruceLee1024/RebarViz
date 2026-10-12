@@ -2,9 +2,9 @@
 
 import { useMemo, useState, useCallback } from 'react';
 import { ThreeEvent } from '@react-three/fiber';
-import * as THREE from 'three';
 import type { RebarMeshInfo, RebarRenderMode } from '@/lib/types';
 import { S, REBAR_MATERIAL } from '@/lib/constants';
+import { createBentAnchorCurve, continuousLineGeometry } from '@/lib/rebar-curve';
 
 const MIN_HIT_RADIUS = 0.055;
 
@@ -57,45 +57,15 @@ export function BentRebarEnd({
   );
 
   const activeColor = (selected || hovered || highlighted) && hiColor ? hiColor : color;
-  const radiusScale = selected ? 1.3 : hovered ? 1.15 : highlighted ? 1.08 : 1;
 
-  const curve = useMemo(() => {
-    const bendRadius = Math.max(Math.min(4 * diameter * S, Math.max(straightLen, 4 * diameter * S) * 0.3), 2 * diameter * S, 0.006);
-    const linePart = Math.max(straightLen - bendRadius, 0);
-    const pts: THREE.Vector3[] = [];
-    const makePoint = (primary: number, vertical: number) =>
-      horizontalAxis === 'x'
-        ? new THREE.Vector3(primary, vertical, 0)
-        : new THREE.Vector3(0, vertical, primary);
-
-    // 水平直段（从梁端面伸入柱内）
-    for (let t = 0; t <= 1; t += 0.1) {
-      pts.push(makePoint(xDir * t * linePart, 0));
-    }
-
-    // 90° 弯折弧
-    const sign = direction === 'down' ? -1 : 1;
-    for (let a = 0; a <= Math.PI / 2; a += Math.PI / 20) {
-      pts.push(makePoint(
-        xDir * (linePart + bendRadius * Math.sin(a)),
-        sign * bendRadius * (1 - Math.cos(a)),
-      ));
-    }
-
-    // 竖直弯折段
-    const bendEndPrimary = xDir * (linePart + bendRadius);
-    const bendEndVertical = sign * bendRadius;
-    for (let t = 0.1; t <= 1; t += 0.1) {
-      pts.push(makePoint(bendEndPrimary, bendEndVertical + sign * t * bendLen));
-    }
-
-    return new THREE.CatmullRomCurve3(pts, false);
-  }, [straightLen, bendLen, diameter, direction, xDir, horizontalAxis]);
+  const curve = useMemo(() => createBentAnchorCurve({
+    straightLen, bendLen, diameter, direction, xDir, horizontalAxis,
+  }), [straightLen, bendLen, diameter, direction, xDir, horizontalAxis]);
 
   const hitRadius = Math.max(r * 5, MIN_HIT_RADIUS);
   const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (selected || hovered || highlighted));
   const showCenterline = renderMode === 'centerline' || !showSolid;
-  const lineGeometry = useMemo(() => new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)), [curve]);
+  const lineGeometry = useMemo(() => continuousLineGeometry(curve.getPoints(96)), [curve]);
 
   return (
     <group
@@ -113,7 +83,7 @@ export function BentRebarEnd({
     >
       {showSolid && (
         <mesh>
-          <tubeGeometry args={[curve, 32, r * radiusScale, 8, false]} />
+          <tubeGeometry args={[curve, 96, r, 12, false]} />
           <meshStandardMaterial
             color={activeColor}
             roughness={REBAR_MATERIAL.roughness}

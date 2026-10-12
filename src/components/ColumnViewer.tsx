@@ -1,23 +1,37 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { columnSectionBars, columnHoopLayout } from '@/lib/reinforcement-layout';
+import { FittedCamera } from './FittedCamera';
+
+import { ViewerControls } from './ViewerControls';
+
+import { useEffect, useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
-import { Maximize2, Minimize2 } from 'lucide-react';
+
 import { useFullscreen } from '@/lib/useFullscreen';
 import * as THREE from 'three';
+import { CappedRebarTube } from './three/CappedRebarTube';
+import { continuousLineGeometry } from '@/lib/rebar-curve';
 import type { ColumnParams, RebarMeshInfo, RebarRenderMode } from '@/lib/types';
 import { parseStirrup, gradeLabel, resolveColumnBars } from '@/lib/rebar';
-import { CameraController } from '@/components/InstancedRebar';
-import { BentRebarEnd } from '@/components/three';
+
+import { CurvedRebar } from './three/CurvedRebar';
+import { roundedRebarPath } from '@/lib/rebar-curve';
 import { calcColumnLapZone, calcLlE } from '@/lib/anchor';
 import { S } from '@/lib/constants';
-import { createStirrupCurves, createStirrupShapeSpec, resolveInnerLegPositions } from '@/lib/rebar-shapes';
+import { createCompositeStirrupCurves, createCompositeStirrupSpec } from '@/lib/rebar-shapes';
 import { formatDistributionRange, isRelatedRebarSet, rebarGroupDataFromInfo } from '@/lib/rebar-semantics';
 import { RebarDetailPanel } from './RebarDetailPanel';
 
 const MIN_COLUMN_HIT_RADIUS = 0.055;
 const MIN_STIRRUP_HIT_RADIUS = 0.045;
+
+function HoopCenterline({ curve, color, selected }: { curve: THREE.Curve<THREE.Vector3>; color: string; selected: boolean }) {
+  const geometry = useMemo(() => continuousLineGeometry(curve.getPoints(320)), [curve]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <lineSegments geometry={geometry}><lineBasicMaterial color={color} transparent opacity={selected ? .95 : .62} /></lineSegments>;
+}
 
 function ClickableBar({ position, height, diameter, color, hiColor, info, selected, onSelect, renderMode = 'solid' }: {
   position: [number, number, number]; height: number; diameter: number;
@@ -27,7 +41,7 @@ function ClickableBar({ position, height, diameter, color, hiColor, info, select
 }) {
   const [hovered, setHovered] = useState(false);
   const activeColor = selected ? hiColor : hovered ? hiColor : color;
-  const scale = selected ? 1.3 : hovered ? 1.15 : 1;
+  const scale = 1; // Selection must not change the physical diameter.
   const r = diameter * S / 2;
   const hitR = Math.max(diameter * S * 2.5, MIN_COLUMN_HIT_RADIUS);
   const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (selected || hovered));
@@ -87,8 +101,9 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
   const hm = params.h * S;
   const COVER = (params.cover || 25) * S;
   const COL_H = (params.height || 3000) * S;
+  const hoopLayout = useMemo(() => columnHoopLayout(params), [params]);
   const hasVariableSection = !!params.hasVariableSection;
-  const variableStart = hasVariableSection ? Math.min(Math.max((params.variableStart || ((params.height || 3000) * 0.7)) * S, 0.2), COL_H - 0.2) : COL_H;
+  const variableStart = hoopLayout.variableStart * S;
   const upperBm = (params.upperB || params.b) * S;
   const upperHm = (params.upperH || params.h) * S;
   const topNodeType = params.topNodeType || 'middle';
@@ -103,74 +118,52 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
   const beamHalf = roofBeamB / 2;
   const stir = parseStirrup(params.stirrup);
   const STIR_D = stir.diameter * S;
-  const innerW = bm - 2 * COVER;
-  const innerH = hm - 2 * COVER;
-  const upperInnerW = upperBm - 2 * COVER;
-  const upperInnerH = upperHm - 2 * COVER;
   const stirCenterW = Math.max(bm - 2 * COVER - STIR_D, 0.02);
   const stirCenterH = Math.max(hm - 2 * COVER - STIR_D, 0.02);
   const upperStirCenterW = Math.max(upperBm - 2 * COVER - STIR_D, 0.02);
   const upperStirCenterH = Math.max(upperHm - 2 * COVER - STIR_D, 0.02);
   const topNodeBarH = Math.max(roofBeamH + (params.hasRoofSlab ? roofSlabT : 0), 0.12);
 
-  const resolved = useMemo(() =>
-    resolveColumnBars(params.main, params.cornerMain, params.bMiddleMain, params.hMiddleMain, innerW, innerH),
-  [params.main, params.cornerMain, params.bMiddleMain, params.hMiddleMain, innerW, innerH]);
-
-  const upperResolved = useMemo(() =>
-    resolveColumnBars(params.main, params.cornerMain, params.bMiddleMain, params.hMiddleMain, upperInnerW, upperInnerH),
-  [params.main, params.cornerMain, params.bMiddleMain, params.hMiddleMain, upperInnerW, upperInnerH]);
+  const resolved = useMemo(() => {
+    const section = columnSectionBars(params);
+    return { ...section, bars: section.bars.map(bar => ({ ...bar, x: bar.x * S, z: bar.z * S })) };
+  }, [params]);
+  const upperResolved = useMemo(() => {
+    const section = columnSectionBars(params, params.upperB || params.b, params.upperH || params.h);
+    return { ...section, bars: section.bars.map(bar => ({ ...bar, x: bar.x * S, z: bar.z * S })) };
+  }, [params]);
   const nodeResolved = hasVariableSection ? upperResolved : resolved;
 
-  const denseZoneLen = useMemo(() => {
-    return Math.max(COL_H / 6, Math.max(bm, hm), 0.5);
-  }, [COL_H, bm, hm]);
+  const denseZoneLen = hoopLayout.denseLength * S;
 
   const lapZone = useMemo(() => calcColumnLapZone(params.height || 3000), [params.height]);
   const lapZoneStart = lapZone.start * S;
   const lapZoneEnd = Math.min(lapZone.end * S, COL_H);
 
-  const stirrups = useMemo(() => {
-    const positions: { y: number; zone: 'dense' | 'normal' }[] = [];
-    const denseS = stir.spacingDense * S;
-    const normalS = stir.spacingNormal * S;
-    for (let y = 0.05; y < denseZoneLen; y += denseS) positions.push({ y, zone: 'dense' });
-    for (let y = denseZoneLen; y < COL_H - denseZoneLen; y += normalS) positions.push({ y, zone: 'normal' });
-    for (let y = COL_H - denseZoneLen; y < COL_H - 0.05; y += denseS) positions.push({ y, zone: 'dense' });
-    return positions;
-  }, [stir.spacingDense, stir.spacingNormal, COL_H, denseZoneLen]);
+  const stirrups = useMemo(() => hoopLayout.positions.map(q => ({...q,y:q.y*S})), [hoopLayout]);
 
-  const stirrupCurves = useMemo(() => createStirrupCurves({
+  const stirrupCurves = useMemo(() => createCompositeStirrupCurves({
     width: stirCenterW,
     height: stirCenterH,
     diameter: stir.diameter,
-    plane: 'xz',
-  }), [stirCenterW, stirCenterH, stir.diameter]);
+    legs: stir.legs,
+    plane: 'xz', barPositions: resolved.bars.map(bar => bar.x),
+  }), [stirCenterW, stirCenterH, stir.diameter, stir.legs, resolved.bars]);
 
-  const upperStirrupCurves = useMemo(() => createStirrupCurves({
+  const upperStirrupCurves = useMemo(() => createCompositeStirrupCurves({
     width: upperStirCenterW,
     height: upperStirCenterH,
     diameter: stir.diameter,
-    plane: 'xz',
-  }), [upperStirCenterW, upperStirCenterH, stir.diameter]);
-
-  const stirrupTieOffsets = useMemo(() => resolveInnerLegPositions({
     legs: stir.legs,
-    width: stirCenterW,
-    barPositions: resolved.bars.map((bar) => bar.x),
-  }), [stir.legs, stirCenterW, resolved.bars]);
+    plane: 'xz', barPositions: upperResolved.bars.map(bar => bar.x),
+  }), [upperStirCenterW, upperStirCenterH, stir.diameter, stir.legs, upperResolved.bars]);
 
-  const upperStirrupTieOffsets = useMemo(() => resolveInnerLegPositions({
-    legs: stir.legs,
-    width: upperStirCenterW,
-    barPositions: upperResolved.bars.map((bar) => bar.x),
-  }), [stir.legs, upperStirCenterW, upperResolved.bars]);
-
-  const stirSpec = useMemo(() => createStirrupShapeSpec({
+  const stirSpec = useMemo(() => createCompositeStirrupSpec({
     widthMm: params.b - 2 * (params.cover || 25) - stir.diameter,
     heightMm: params.h - 2 * (params.cover || 25) - stir.diameter,
-    diameterMm: stir.diameter,
-  }), [params.b, params.h, params.cover, stir.diameter]);
+    diameterMm: stir.diameter, legs: stir.legs,
+    barPositionsMm: columnSectionBars(params).bars.map(bar => bar.x),
+  }), [params, stir.diameter, stir.legs]);
 
   const [stirHovered, setStirHovered] = useState(false);
   const isSetSelected = (type: RebarMeshInfo['type'], setId?: string) => {
@@ -306,24 +299,17 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
           info={{ ...infoForRole(bar.role), instanceIndex: i + 1 }} selected={isBarSelected(bar.role)} onSelect={onSelect} renderMode={renderMode} />
       ))}
 
-      {topNodeBentBars.map(({ bar, horizontalAxis, xDir, straightLen, bendLen }, i) => (
-        <BentRebarEnd
-          key={`r-top-bent-${i}`}
-          position={[bar.x, COL_H, bar.z]}
-          straightLen={straightLen}
-          bendLen={bendLen}
-          diameter={bar.diameter}
-          direction="up"
-          horizontalAxis={horizontalAxis}
-          xDir={xDir}
-          color={nodeResolved.isDetailed ? barColor(bar.role) : COLOR_CORNER}
+      {topNodeBentBars.map(({ bar, horizontalAxis, xDir, straightLen }, i) => {
+        const rise = Math.max(topNodeBarH - COVER - bar.diameter * S / 2, 0);
+        const curve = roundedRebarPath([
+          new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, rise, 0),
+          new THREE.Vector3(horizontalAxis === 'x' ? xDir * straightLen : 0, rise, horizontalAxis === 'z' ? xDir * straightLen : 0),
+        ], bar.diameter * S * 4);
+        return <CurvedRebar key={`r-top-bent-${i}`} curve={curve} position={[bar.x, COL_H, bar.z]}
+          diameter={bar.diameter} color={nodeResolved.isDetailed ? barColor(bar.role) : COLOR_CORNER}
           hiColor={nodeResolved.isDetailed ? barHiColor(bar.role) : COLOR_CORNER_HI}
-          info={{ ...infoForRole(bar.role), instanceIndex: i + 1 }}
-          selected={isBarSelected(bar.role)}
-          onSelect={onSelect}
-          renderMode={renderMode}
-        />
-      ))}
+          info={{ ...infoForRole(bar.role), instanceIndex: i + 1 }} selected={isBarSelected(bar.role)} onSelect={onSelect} renderMode={renderMode} />;
+      })}
 
       <group>
         <mesh position={[0, denseZoneLen / 2, 0]}>
@@ -343,8 +329,6 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
       {stirrups.map(({ y, zone }, i) => {
         const isUpper = hasVariableSection && y >= variableStart;
         const activeCurves = isUpper ? upperStirrupCurves : stirrupCurves;
-        const activeTieOffsets = isUpper ? upperStirrupTieOffsets : stirrupTieOffsets;
-        const activeTieLength = isUpper ? upperStirCenterH : stirCenterH;
         const zoneKey = zone === 'normal' ? 'normal' : (y < denseZoneLen ? 'dense-bottom' : 'dense-top');
         const setId = `column.stirrup.${zoneKey}`;
         const groupStirrups = stirrups.filter((item) => {
@@ -358,7 +342,7 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
         const stirInfo: RebarMeshInfo = {
           type: 'stirrup',
           label: zone === 'dense' ? '箍筋(加密区)' : '箍筋(非加密区)',
-          detail: `${params.stirrup} · ${gradeLabel(stir.grade)} Φ${stir.diameter} 加密${stir.spacingDense}/非加密${stir.spacingNormal} ${stir.legs}肢箍，中心线${Math.round(stirSpec.widthMm)}×${Math.round(stirSpec.heightMm)}，单根L=${stirSpec.lengthMm}mm`,
+          detail: `${params.stirrup} · ${gradeLabel(stir.grade)} Φ${stir.diameter} 加密${stir.spacingDense}/非加密${stir.spacingNormal} ${stir.legs}肢箍，中心线${Math.round(stirSpec.widthMm)}×${Math.round(stirSpec.heightMm)}，每道${stirSpec.pieceCount}个独立箍，总L=${stirSpec.lengthMm}mm`,
           setId,
           instanceIndex,
           groupLabel: zoneKey === 'normal' ? '柱中部非加密区箍筋' : zoneKey === 'dense-bottom' ? '柱底部加密区箍筋' : '柱顶部加密区箍筋',
@@ -372,79 +356,23 @@ function ColumnScene({ params, selected, onSelect, cutPosition, concreteOpacity,
         const stirHitR = Math.max(STIR_D * 2.5, MIN_STIRRUP_HIT_RADIUS);
         const showSolid = renderMode === 'solid' || (renderMode === 'hybrid' && (activeStirSelected || stirHovered || anyColumnBarSelected));
         const showCenterline = renderMode === 'centerline' || !showSolid;
-        const outerLineGeometry = new THREE.BufferGeometry().setFromPoints(activeCurves.outerCurve.getPoints(120));
-        const hookLineGeometries = activeCurves.hookCurves.map((hookCurve) => new THREE.BufferGeometry().setFromPoints(hookCurve.getPoints(32)));
-        const tieLineGeometry = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(0, -activeTieLength / 2, 0),
-          new THREE.Vector3(0, activeTieLength / 2, 0),
-        ]);
         return (
         <group key={`s${i}`} position={[0, y, 0]}
           onClick={(e) => { e.stopPropagation(); onSelect(activeStirSelected ? null : stirInfo); }}
           onPointerOver={(e) => { e.stopPropagation(); setStirHovered(true); document.body.style.cursor = 'pointer'; }}
           onPointerOut={() => { setStirHovered(false); document.body.style.cursor = 'auto'; }}>
-          {showSolid && (
+          {activeCurves.hoops.map(({ fullCurve }, hoopIndex) => <group key={hoopIndex}>
+            {showSolid && <CappedRebarTube curve={fullCurve} radius={STIR_D / 2}>
+              <meshStandardMaterial color={activeColor} roughness={.4} metalness={.6}
+                emissive={activeStirSelected || anyColumnBarSelected || isRelated(setId) ? '#2ECC71' : '#000000'}
+                emissiveIntensity={stirEmissiveIntensity} />
+            </CappedRebarTube>}
+            {showCenterline && <HoopCenterline curve={fullCurve} color={activeColor} selected={activeStirSelected} />}
             <mesh>
-              <tubeGeometry args={[activeCurves.outerCurve, 160, STIR_D / 2, 8, true]} />
-              <meshStandardMaterial
-                color={activeColor}
-                roughness={0.4} metalness={0.6}
-                emissive={activeStirSelected || anyColumnBarSelected || isRelated(setId) ? '#2ECC71' : '#000000'} emissiveIntensity={stirEmissiveIntensity} />
+              <tubeGeometry args={[fullCurve, 160, stirHitR, 6, false]} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
             </mesh>
-          )}
-          {showCenterline && (
-            <lineSegments geometry={outerLineGeometry}>
-              <lineBasicMaterial color={activeColor} transparent opacity={activeStirSelected ? 0.95 : 0.62} />
-            </lineSegments>
-          )}
-          <mesh>
-            <tubeGeometry args={[activeCurves.outerCurve, 100, stirHitR, 6, true]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-          {activeCurves.hookCurves.map((hookCurve, hi) => (
-            <group key={`st-hook-${hi}`}>
-              {showSolid && (
-                <mesh>
-                  <tubeGeometry args={[hookCurve, 40, STIR_D / 2, 6, false]} />
-                  <meshStandardMaterial
-                    color={activeColor}
-                    roughness={0.4} metalness={0.6}
-                    emissive={activeStirSelected || anyColumnBarSelected || isRelated(setId) ? '#2ECC71' : '#000000'} emissiveIntensity={stirEmissiveIntensity} />
-                </mesh>
-              )}
-              {showCenterline && (
-                <lineSegments geometry={hookLineGeometries[hi]}>
-                  <lineBasicMaterial color={activeColor} transparent opacity={activeStirSelected ? 0.95 : 0.62} />
-                </lineSegments>
-              )}
-              <mesh>
-                <tubeGeometry args={[hookCurve, 28, stirHitR, 6, false]} />
-                <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-              </mesh>
-            </group>
-          ))}
-          {activeTieOffsets.map((x, ti) => (
-            <group key={`st-tie-${ti}`} position={[x, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
-              {showSolid && (
-                <mesh>
-                  <cylinderGeometry args={[STIR_D / 2, STIR_D / 2, activeTieLength, 8]} />
-                  <meshStandardMaterial
-                    color={activeColor}
-                    roughness={0.4} metalness={0.6}
-                    emissive={activeStirSelected || anyColumnBarSelected || isRelated(setId) ? '#2ECC71' : '#000000'} emissiveIntensity={stirEmissiveIntensity} />
-                </mesh>
-              )}
-              {showCenterline && (
-                <lineSegments geometry={tieLineGeometry}>
-                  <lineBasicMaterial color={activeColor} transparent opacity={activeStirSelected ? 0.95 : 0.62} />
-                </lineSegments>
-              )}
-              <mesh>
-                <cylinderGeometry args={[stirHitR, stirHitR, activeTieLength, 6]} />
-                <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-              </mesh>
-            </group>
-          ))}
+          </group>)}
         </group>
       )})}
 
@@ -598,14 +526,16 @@ export default function ColumnViewer({ params, cutPosition, showCut, onCutPositi
     const linearWeight = (d: number) => d * d / 162 / 1000;
 
     if (selected.type === 'stirrup') {
-      const stirSpec = createStirrupShapeSpec({
+      const stirSpec = createCompositeStirrupSpec({
         widthMm: params.b - 2 * cover - stir.diameter,
         heightMm: params.h - 2 * cover - stir.diameter,
-        diameterMm: stir.diameter,
+        diameterMm: stir.diameter, legs: stir.legs,
+        barPositionsMm: columnSectionBars(params).bars.map(bar => bar.x),
       });
       return {
         ...groupData,
-        length: stirSpec.lengthMm,
+        piecesPerStation: stirSpec.pieceCount,
+          length: stirSpec.lengthMm,
         weight: stirSpec.lengthMm * linearWeight(stir.diameter),
         spacing: selected.setId?.includes('normal') ? stir.spacingNormal : stir.spacingDense,
       };
@@ -637,8 +567,8 @@ export default function ColumnViewer({ params, cutPosition, showCut, onCutPositi
   }, [currentSelected, params]);
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
+    <div data-viewer className="rv-viewer">
+      <div className="rv-viewer-toolbar flex items-center gap-2 flex-wrap">
         <button
           onClick={() => { onShowCutChange(!showCut); if (showCut) onCutPositionChange(null); else onCutPositionChange(COL_H / 2); }}
           className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${showCut ? 'bg-accent text-white' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50'}`}>
@@ -675,43 +605,27 @@ export default function ColumnViewer({ params, cutPosition, showCut, onCutPositi
         </div>
       )}
 
-      <div ref={fsContainerRef} className={`relative w-full bg-surface overflow-hidden ${fsClass}`}>
+      <div ref={fsContainerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${fsClass}`}>
         {currentSelected && <RebarDetailPanel info={currentSelected} onClose={() => setCurrentSelected(null)} additionalData={selectedAdditionalData} />}
 
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5">
-          {[
+        <ViewerControls views={[
             { name: '正面', pos: [0, COL_H / 2, camDist] as [number, number, number] },
             { name: '侧面', pos: [camDist, COL_H / 2, 0] as [number, number, number] },
             { name: '俯视', pos: [0, camDist + COL_H * 0.2, 0.1] as [number, number, number] },
             { name: '透视', pos: [camDist * 0.55, COL_H * 0.75, camDist * 0.75] as [number, number, number] },
-          ].map(a => (
-            <button key={a.name} onClick={() => setCameraTarget(a.pos)}
-              className="px-2 py-1 rounded-md text-[11px] font-medium cursor-pointer bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors">
-              {a.name}
-            </button>
-          ))}
-          <div className="flex items-center gap-1 ml-1 px-2 py-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60">
-            <span className="text-[11px] text-muted">透明</span>
-            <input type="range" min={0} max={0.4} step={0.02} value={concreteOpacity}
-              onChange={e => setConcreteOpacity(parseFloat(e.target.value))} className="w-12 accent-accent" />
-          </div>
-          <button onClick={fsToggle}
-            className="ml-1 p-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors cursor-pointer"
-            title={fsActive ? '退出全屏 (Esc)' : '全屏显示'}>
-            {fsActive ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
-        </div>
+          ]} onView={setCameraTarget} opacity={concreteOpacity} onOpacity={setConcreteOpacity}
+          fullscreen={fsActive} onFullscreen={fsToggle} />
 
-        <Canvas camera={{ position: [camDist * 0.55, COL_H * 0.75, camDist * 0.75], fov: 45 }} scene={{ background: new THREE.Color('#f8fafc') }}>
-          <CameraController targetPosition={cameraTarget} />
+        <Canvas camera={{ position: [camDist * 0.55, COL_H * 0.75, camDist * 0.75], fov: 45 }} scene={{ background: new THREE.Color('#071725') }}>
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[camDist * 0.55, COL_H * 0.75, camDist * 0.75]} center={[0, COL_H / 2, 0]} bounds={[Math.max(params.b * S * 2, 1.2), COL_H + 1.8, Math.max(params.h * S * 2, 1.2)]} />
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 8, 5]} intensity={0.8} castShadow />
             <ColumnScene params={params} selected={currentSelected} onSelect={setCurrentSelected} cutPosition={cutPosition} concreteOpacity={concreteOpacity} renderMode={renderMode} />
-          <Grid args={[10, 10]} position={[0, -0.01, 0]} cellColor="#E2E8F0" sectionColor="#E2E8F0" fadeDistance={15} />
+          <Grid args={[10, 10]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={15} />
           <axesHelper args={[1]} />
           <OrbitControls target={[0, COL_H / 2, 0]} enableDamping dampingFactor={0.1} />
         </Canvas>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
+        <div className="rv-viewer-hints absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
           左键旋转 · 右键平移 · 滚轮缩放 · 点击钢筋查看详情
         </div>
       </div>

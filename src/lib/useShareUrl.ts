@@ -5,7 +5,13 @@ import { useCallback } from 'react';
 export function useShareUrl(params: object) {
   const getShareUrl = useCallback(() => {
     const encoded = btoa(encodeURIComponent(JSON.stringify(params)));
-    const url = `${window.location.origin}${window.location.pathname}?p=${encoded}`;
+    const query = new URLSearchParams();
+    const current = new URLSearchParams(window.location.search);
+    if (window.location.pathname.replace(/\/$/, '').endsWith('/beam')) for (const key of ['kind', 'system']) {
+      const value = current.get(key); if (value) query.set(key, value);
+    }
+    query.set('p', encoded);
+    const url = `${window.location.origin}${window.location.pathname}?${query}`;
     return url;
   }, [params]);
 

@@ -4,6 +4,21 @@
  */
 
 // ─── HiDPI 适配 ──────────────────────────────────────────────────
+export function isDarkCanvas(ctx: CanvasRenderingContext2D): boolean {
+  return !!ctx.canvas.closest('.rv-theme');
+}
+
+export function canvasPaletteColor(ctx: CanvasRenderingContext2D, color: string): string {
+  if (!isDarkCanvas(ctx)) return color;
+  const palette: Record<string, string> = {
+    '#C0392B': '#f87171', '#E67E22': '#fbbf77', '#2980B9': '#6ab7f6',
+    '#8E44AD': '#c4b5fd', '#27AE60': '#61dbaa', '#1E8449': '#61dbaa',
+    '#1ABC9C': '#52d4c8', '#1D4ED8': '#7dd3fc', '#64748B': '#9db7cb',
+    '#1E293B': '#dcebf6', '#334155': '#b5ccdc', '#475569': '#a3bdcf',
+  };
+  return palette[color.toUpperCase()] ?? color;
+}
+
 /** 设置 canvas 的物理像素尺寸以适配 Retina 屏幕，返回 ctx */
 export function setupHiDPI(
   canvas: HTMLCanvasElement,
@@ -27,8 +42,9 @@ export function drawConcreteSection(
   ctx: CanvasRenderingContext2D,
   cx: number, cy: number,
   w: number, h: number,
+  dark = false,
 ) {
-  ctx.fillStyle = '#F1F5F9';
+  ctx.fillStyle = dark || isDarkCanvas(ctx) ? '#112c40' : '#F1F5F9';
   ctx.strokeStyle = '#94A3B8';
   ctx.lineWidth = 2;
   ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
@@ -44,7 +60,7 @@ export function drawRebarDot(
 ) {
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = color;
+  ctx.fillStyle = canvasPaletteColor(ctx, color);
   ctx.fill();
   // 深色描边
   ctx.strokeStyle = darken(color, 0.3);
@@ -58,7 +74,7 @@ export function drawRebarCross(
   x: number, y: number,
   r: number, color: string,
 ) {
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r);
@@ -66,9 +82,9 @@ export function drawRebarCross(
   ctx.stroke();
 }
 
-// ─── 箍筋（圆角闭合中心线 + 135°弯钩） ──────────────────────────────
+// ─── 箍筋（开口圆角中心线 + 135°弯钩） ──────────────────────────────
 /**
- * 绘制箍筋截面符号：圆角闭合中心线 + 同一搭接角的双 135° 弯钩。
+ * 绘制箍筋截面符号：三角圆弧本体 + 同一搭接角的双 135° 弯钩。
  * 截面图表达的是箍筋形状语义，不在四个角重复画弯钩。
  * @param x  矩形左上角 x
  * @param y  矩形左上角 y
@@ -82,55 +98,45 @@ export function drawStirrup(
   w: number, h: number,
   color: string,
   hookLen = 8,
+  cornerRadius?: number,
 ) {
-  const r = Math.min(Math.max(Math.min(w, h) * 0.08, 4), Math.min(w, h) * 0.22);
-  const hook = Math.min(Math.max(hookLen, 14), Math.min(w, h) * 0.36);
-  const tail = hook * 0.9;
-  const lapOffset = Math.max(r + hook * 0.45, 12);
+  const r = cornerRadius ?? Math.min(Math.max(Math.min(w, h) * 0.08, 4), Math.min(w, h) * 0.22);
+  const tail = hookLen;
   const sq = Math.SQRT1_2;
-
-  ctx.strokeStyle = color;
+  ctx.save();
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 1.7;
   ctx.setLineDash([]);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // 圆角闭合箍筋中心线
+  // The body has three corners. Two open 135° hooks form the overlapped fourth.
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.arc(x + w - r, y + r, r, -Math.PI / 2, 0);
   ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.arc(x + w - r, y + h - r, r, 0, Math.PI / 2);
   ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.arc(x + r, y + h - r, r, Math.PI / 2, Math.PI);
   ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
   ctx.stroke();
 
-  // 双 135°弯钩：避开角筋点位，分别从上边、左边转入截面内侧。
-  const topHookX = x + lapOffset;
-  const topHookY = y;
-  const sideHookX = x;
-  const sideHookY = y + lapOffset;
+  // Rear end is dashed in this projection: depth overlap is not a welded joint.
   ctx.save();
-  ctx.lineWidth = 2.2;
-  ctx.strokeStyle = color;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
+  ctx.setLineDash([3, 2]);
+  ctx.globalAlpha *= .65;
   ctx.beginPath();
-  ctx.moveTo(topHookX + hook * 0.7, topHookY);
-  ctx.lineTo(topHookX, topHookY);
-  ctx.quadraticCurveTo(topHookX - hook * 0.25, topHookY, topHookX - hook * 0.25, topHookY + hook * 0.35);
-  ctx.lineTo(topHookX - hook * 0.25 + tail * sq, topHookY + hook * 0.35 + tail * sq);
+  ctx.moveTo(x + r, y);
+  ctx.arc(x + r, y + r, r, -Math.PI / 2, -Math.PI * 5 / 4, true);
+  ctx.lineTo(x + r - r * sq + tail * sq, y + r + r * sq + tail * sq);
   ctx.stroke();
+  ctx.restore();
 
   ctx.beginPath();
-  ctx.moveTo(sideHookX, sideHookY + hook * 0.7);
-  ctx.lineTo(sideHookX, sideHookY);
-  ctx.quadraticCurveTo(sideHookX, sideHookY - hook * 0.25, sideHookX + hook * 0.35, sideHookY - hook * 0.25);
-  ctx.lineTo(sideHookX + hook * 0.35 + tail * sq, sideHookY - hook * 0.25 + tail * sq);
+  ctx.moveTo(x, y + r);
+  ctx.arc(x + r, y + r, r, Math.PI, Math.PI * 7 / 4);
+  ctx.lineTo(x + r + r * sq + tail * sq, y + r - r * sq + tail * sq);
   ctx.stroke();
   ctx.restore();
 }
@@ -154,7 +160,7 @@ export function drawInnerTies(
 ) {
   if (legs <= 2) return; // 2肢箍无内拉筋
 
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 1.2;
   ctx.setLineDash([]);
 
@@ -221,8 +227,8 @@ export function drawDimLine(
 ) {
   const color = '#64748B';
   const arrowSize = 4;
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
+  ctx.fillStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 1;
   ctx.setLineDash([]);
   ctx.font = '10px system-ui, sans-serif';
@@ -316,8 +322,8 @@ export function drawCoverDim(
   coverMm: number,
 ) {
   const color = '#94A3B8';
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
+  ctx.fillStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 0.8;
   ctx.setLineDash([2, 2]);
 
@@ -357,7 +363,7 @@ export function drawLabel(
   canvasLogicalW: number,
   align: 'left' | 'right' = 'left',
 ) {
-  ctx.fillStyle = color;
+  ctx.fillStyle = canvasPaletteColor(ctx, color);
   ctx.font = '11px system-ui, sans-serif';
 
   // 测量文字宽度
@@ -386,7 +392,7 @@ export function drawLeaderLabel(
   text: string,
   color: string,
 ) {
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = canvasPaletteColor(ctx, color);
   ctx.lineWidth = 0.8;
   ctx.setLineDash([]);
   ctx.beginPath();
@@ -394,7 +400,7 @@ export function drawLeaderLabel(
   ctx.lineTo(toX, toY);
   ctx.stroke();
 
-  ctx.fillStyle = color;
+  ctx.fillStyle = canvasPaletteColor(ctx, color);
   ctx.font = '11px system-ui, sans-serif';
   ctx.textAlign = toX > fromX ? 'left' : 'right';
   ctx.textBaseline = 'middle';

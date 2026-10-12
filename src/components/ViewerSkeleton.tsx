@@ -2,7 +2,7 @@
 
 export function ViewerSkeleton() {
   return (
-    <div className="w-full h-[500px] lg:h-[600px] bg-gradient-to-b from-white to-gray-50 rounded-xl border border-gray-100 shadow-sm overflow-hidden flex items-center justify-center">
+    <div className="rv-viewer-loading">
       <div className="text-center">
         <div className="relative w-12 h-12 mx-auto mb-4">
           <div className="absolute inset-0 border-2 border-blue-100 rounded-full" />

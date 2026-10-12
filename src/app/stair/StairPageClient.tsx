@@ -1,12 +1,16 @@
 'use client';
 
+import { FormworkCalc } from '@/components/FormworkCalc';
+
+import { WorkbenchLayout, WorkbenchTabs } from '@/components/WorkbenchLayout';
+
 import { useState, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import type { StairParams, StairType, ComponentType } from '@/lib/types';
 import { STAIR_PRESETS } from '@/lib/rebar';
 import { calcStair, calcStairRebarRatios } from '@/lib/calc';
-import { checkStairCompliance } from '@/lib/compliance';
+import { checkCompliance } from '@/lib/compliance';
 import { buildStairContext } from '@/lib/ai-context';
 import { StairCrossSection } from '@/components/CrossSection';
 import { StairExplain } from '@/components/NotationExplain';
@@ -22,14 +26,14 @@ import { Field, NumField, Legend, ResetButton, SelectField, Section } from '@/co
 import { ViewerSkeleton } from '@/components/ViewerSkeleton';
 import { CONCRETE_GRADES } from '@/lib/anchor';
 import type { ConcreteGrade } from '@/lib/anchor';
-import { Sparkles } from 'lucide-react';
 
 const DATA_TABS = [
   { key: 'section', label: '截面图' },
   { key: 'ratio', label: '配筋率' },
-  { key: 'compliance', label: '规范校验' },
+  { key: 'compliance', label: '构造检查' },
   { key: 'weight', label: '用量估算' },
   { key: 'concrete', label: '混凝土量' },
+  { key: 'formwork', label: '模板量' },
   { key: 'bbs', label: '弯折详图' },
 ] as const;
 
@@ -73,7 +77,7 @@ export function StairPageClient() {
   const calcResult = useMemo(() => calcStair(params), [params]);
   const concreteResult = useMemo(() => calcStairConcrete(params), [params]);
   const ratioResult = useMemo(() => calcStairRebarRatios(params), [params]);
-  const complianceResults = useMemo(() => checkStairCompliance(params), [params]);
+  const complianceResults = useMemo(() => checkCompliance('stair', params), [params]);
   const aiContext = useMemo(() => buildStairContext(params), [params]);
 
   // 计算楼梯几何信息
@@ -90,32 +94,26 @@ export function StairPageClient() {
   };
 
   return (
-    <main className="px-4 py-4">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 左栏：参数输入 */}
-        <div className="lg:col-span-3 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-primary">参数输入</h2>
-              <div className="flex items-center gap-2">
-                <ResetButton onClick={() => setParams(DEFAULT)} />
-                <ShareButton params={params} />
-              </div>
-            </div>
-
+    <WorkbenchLayout
+      title="楼梯配筋工作台"
+      summary={<>{params.id}<span>·</span>{params.stairType} 型<span>·</span>{params.stepCount} 级踏步</>}
+      actions={<ShareButton params={params} className="rv-button rv-share-button" />}
+      inspector={
+        <>
+          <div className="rv-inspector-tools"><span>快速示例</span><ResetButton onClick={() => setParams(DEFAULT)} /></div>
+          <div className="rv-parameter-form">
             <div className="mb-4">
-              <label className="text-xs text-muted mb-2 block">快速示例</label>
+
               <div className="flex flex-wrap gap-1.5">
                 {(params.stairType === 'BT' ? BT_PRESETS : AT_PRESETS).map(({ key, label, dot }) => (
                   <button key={key} onClick={() => setParams({ ...STAIR_PRESETS[key as keyof typeof STAIR_PRESETS] })}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-all bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-white hover:shadow-sm active:scale-95">
+                    className="rv-preset-button">
                     <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
                     {label}
                   </button>
                 ))}
               </div>
             </div>
-
             <div className="space-y-3">
               <Field label="楼梯编号" value={params.id} onChange={v => update({ id: v })} />
               <div>
@@ -133,7 +131,6 @@ export function StairPageClient() {
                 )}
               </div>
             </div>
-
             <Section title="踏步几何" defaultOpen>
               <NumField label="踏步数 n" value={params.stepCount} onChange={v => update({ stepCount: v })} min={3} max={24} />
               <NumField label="踏步高 h (mm)" value={params.stepHeight} onChange={v => update({ stepHeight: v })} min={100} max={200} />
@@ -144,7 +141,6 @@ export function StairPageClient() {
                 <NumField label="低端平板长 (mm)" value={params.botFlatLen ?? 700} onChange={v => update({ botFlatLen: v })} min={200} max={2000} />
               )}
             </Section>
-
             <Section title="平台">
               <NumField label="上平台板长 (mm)" value={params.topPlatformLen} onChange={v => update({ topPlatformLen: v })} min={600} max={3000} />
               <NumField label="下平台板长 (mm)" value={params.botPlatformLen} onChange={v => update({ botPlatformLen: v })} min={600} max={3000} />
@@ -152,122 +148,86 @@ export function StairPageClient() {
               <NumField label="梯梁宽 (mm)" value={params.beamB} onChange={v => update({ beamB: v })} min={150} max={400} />
               <NumField label="梯梁高 (mm)" value={params.beamH} onChange={v => update({ beamH: v })} min={200} max={600} />
             </Section>
-
             <Section title="配筋" defaultOpen>
               <Field label="下部纵筋" value={params.bottomBar} onChange={v => update({ bottomBar: v })} placeholder="如: C10@150" />
               <Field label="上部纵筋" value={params.topBar} onChange={v => update({ topBar: v })} placeholder="如: C8@200" />
               <Field label="分布筋" value={params.distBar} onChange={v => update({ distBar: v })} placeholder="如: A6@250" />
             </Section>
-
             <Section title="材料与构造">
               <SelectField label="混凝土等级" value={params.concreteGrade} onChange={v => update({ concreteGrade: v as ConcreteGrade })}
                 options={CONCRETE_GRADES.map(g => ({ value: g, label: g }))} />
               <NumField label="保护层 (mm)" value={params.cover} onChange={v => update({ cover: v })} min={10} max={30} />
-            </Section>
+            </Section></div><Section title="图例说明"><Legend items={[
+              { color: '#C0392B', label: '下部纵筋' },
+              { color: '#8E44AD', label: '上部纵筋' },
+              { color: '#27AE60', label: '分布筋' },
+              { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
+            ]} /></Section>
+        </>}
+      viewer={<StairViewer params={params} />}
+      analysisTabs={<WorkbenchTabs tabs={DATA_TABS} active={dataTab} onChange={setDataTab} badges={{ compliance: <ComplianceBadge results={complianceResults} /> }} />}
+      analysis={<>{dataTab === 'section' && (
+        <>
+
+          <div className="flex justify-center">
+            <StairCrossSection params={params} />
           </div>
-
-          <Legend items={[
-            { color: '#C0392B', label: '下部纵筋' },
-            { color: '#8E44AD', label: '上部纵筋' },
-            { color: '#27AE60', label: '分布筋' },
-            { color: '#BDC3C7', label: '混凝土（半透明）', opacity: 0.6 },
-          ]} />
-        </div>
-
-        {/* 中栏：3D模型 + 数据 tab */}
-        <div className={`${showAI ? 'lg:col-span-6' : 'lg:col-span-9'} space-y-4 min-w-0 transition-all`}>
-          <StairViewer params={params} />
-
-          {/* Data tabs */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100">
-              <div className="flex items-center gap-1 bg-gray-100/80 rounded-lg p-0.5">
-                {DATA_TABS.map(t => (
-                  <button key={t.key} onClick={() => setDataTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${dataTab === t.key ? 'bg-white text-accent shadow-sm' : 'text-muted hover:text-primary'}`}>
-                    {t.label}
-                    {t.key === 'compliance' && <ComplianceBadge results={complianceResults} />}
-                  </button>
-                ))}
+          {/* 几何信息 */}
+          <div className="mt-4 pt-3 border-t border-gray-100">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <InfoCard label="总升高" value={`${geoInfo.totalRise} mm`} sub={`${params.stepCount}×${params.stepHeight}`} />
+              <InfoCard label="总水平长" value={`${geoInfo.totalRun} mm`} sub={`${params.stepCount}×${params.stepWidth}`} />
+              <InfoCard label="梯板倾角" value={`${geoInfo.angle}°`} sub="tan⁻¹(H/B)" />
+              <InfoCard label="梯板斜长" value={`${geoInfo.slabLen} mm`} sub="沿斜面" />
+            </div>
+            <div className="mt-3">
+              <h4 className="text-xs font-semibold text-muted mb-2">22G101-2 {params.stairType}型 注写方式</h4>
+              <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 font-mono leading-relaxed">
+                <p>{params.stairType}{params.stepCount}×{params.stepHeight}/{params.stepWidth}{params.stairType === 'BT' ? ` Lf=${params.botFlatLen ?? 700}` : ''}</p>
+                <p className="text-[11px] text-muted mt-1">
+                  第1项: 楼梯类型代号 {params.stairType} · 第2项: 踏步数×踏步高/踏步宽{params.stairType === 'BT' ? ' · Lf: 低端平板长' : ''}
+                </p>
               </div>
-              {/* AI toggle */}
-              <button onClick={() => setShowAI(a => !a)}
-                className={`ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center gap-1.5 ${showAI ? 'bg-gradient-to-r from-blue-500 to-violet-500 text-white shadow-md shadow-blue-500/20' : 'bg-gradient-to-r from-blue-50 to-violet-50 text-violet-600 hover:from-blue-100 hover:to-violet-100'}`}>
-                <Sparkles className="w-3.5 h-3.5" />
-                AI 助手
-              </button>
-            </div>
-            <div className="p-5">
-              {dataTab === 'section' && (
-                <>
-                  <h2 className="text-sm font-semibold text-primary mb-3">梯板截面配筋示意</h2>
-                  <div className="flex justify-center">
-                    <StairCrossSection params={params} />
-                  </div>
-                  {/* 几何信息 */}
-                  <div className="mt-4 pt-3 border-t border-gray-100">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                      <InfoCard label="总升高" value={`${geoInfo.totalRise} mm`} sub={`${params.stepCount}×${params.stepHeight}`} />
-                      <InfoCard label="总水平长" value={`${geoInfo.totalRun} mm`} sub={`${params.stepCount}×${params.stepWidth}`} />
-                      <InfoCard label="梯板倾角" value={`${geoInfo.angle}°`} sub="tan⁻¹(H/B)" />
-                      <InfoCard label="梯板斜长" value={`${geoInfo.slabLen} mm`} sub="沿斜面" />
-                    </div>
-                    <div className="mt-3">
-                      <h4 className="text-xs font-semibold text-muted mb-2">22G101-2 {params.stairType}型 注写方式</h4>
-                      <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 font-mono leading-relaxed">
-                        <p>{params.stairType}{params.stepCount}×{params.stepHeight}/{params.stepWidth}{params.stairType === 'BT' ? ` Lf=${params.botFlatLen ?? 700}` : ''}</p>
-                        <p className="text-[11px] text-muted mt-1">
-                          第1项: 楼梯类型代号 {params.stairType} · 第2项: 踏步数×踏步高/踏步宽{params.stairType === 'BT' ? ' · Lf: 低端平板长' : ''}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-              {dataTab === 'ratio' && <RebarRatioCard ratios={ratioResult} />}
-              {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
-              {dataTab === 'weight' && <WeightCalc result={calcResult} beamId={params.id} meta={{ id: params.id }} />}
-              {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
-              {dataTab === 'bbs' && <StairBarBendingSchedule params={params} />}
             </div>
           </div>
-        </div>
-
-        {/* 右栏：AI 侧边栏（可收起） */}
-        {showAI && (
-          <div className="lg:col-span-3">
-            <AISidebar
-              componentType="stair"
-              currentParams={params}
-              onApplyParams={(p) => handleAIApply(p as Partial<StairParams>)}
-              context={aiContext}
-              notationSlot={<StairExplain params={params} />}
-              initialMessage={aiMessage}
-              onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
-              onNavigateComponent={(type: ComponentType, message?: string) => {
-                const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
-                router.push(`/${type}${encoded}`);
-              }}
-              onApplyPreset={(preset) => {
-                if (preset in STAIR_PRESETS) setParams({ ...STAIR_PRESETS[preset as keyof typeof STAIR_PRESETS] });
-              }}
-              onGetCurrentState={() => aiContext}
-              onResetParams={() => setParams({ ...STAIR_PRESETS.standard })}
-              onRunComplianceCheck={() => {
-                const results = complianceResults;
-                const pass = results.filter(r => r.status === 'pass').length;
-                const fail = results.filter(r => r.status === 'fail').length;
-                const warn = results.filter(r => r.status === 'warn').length;
-                return {
-                  results,
-                  summary: `校验完成: ${pass}项通过, ${fail}项不通过, ${warn}项警告\n${results.filter(r => r.status !== 'pass').map(r => `- [${r.status === 'fail' ? '❌' : '⚠️'}] ${r.message} (${r.rule})`).join('\n')}`,
-                };
-              }}
-            />
-          </div>
-        )}
-      </div>
-    </main>
+        </>
+      )}
+        {dataTab === 'ratio' && <RebarRatioCard ratios={ratioResult} />}
+        {dataTab === 'compliance' && <CompliancePanel results={complianceResults} />}
+        {dataTab === 'weight' && <WeightCalc result={calcResult} beamId={params.id} meta={{ id: params.id }} />}
+        {dataTab === 'concrete' && <ConcreteCalc result={concreteResult} />}
+        <div hidden={dataTab !== 'formwork'}><FormworkCalc componentType="stair" params={params} /></div>
+        {dataTab === 'bbs' && <StairBarBendingSchedule params={params} />}</>}
+      assistant={showAI ? <AISidebar
+        componentType="stair"
+        currentParams={params}
+        onApplyParams={(p) => handleAIApply(p as Partial<StairParams>)}
+        context={aiContext}
+        notationSlot={<StairExplain params={params} />}
+        initialMessage={aiMessage}
+        onSwitchTab={(tab) => setDataTab(tab as typeof dataTab)}
+        onNavigateComponent={(type: ComponentType, message?: string) => {
+          const encoded = message ? `?ai=${encodeURIComponent(message)}` : '';
+          router.push(`/${type}${encoded}`);
+        }}
+        onApplyPreset={(preset) => {
+          if (preset in STAIR_PRESETS) setParams({ ...STAIR_PRESETS[preset as keyof typeof STAIR_PRESETS] });
+        }}
+        onGetCurrentState={() => aiContext}
+        onResetParams={() => setParams({ ...STAIR_PRESETS.standard })}
+        onRunComplianceCheck={() => {
+          const results = complianceResults;
+          const pass = results.filter(r => r.status === 'pass').length;
+          const fail = results.filter(r => r.status === 'fail').length;
+          const warn = results.filter(r => r.status === 'warn').length;
+          return {
+            results,
+            summary: `校验完成: ${pass}项通过, ${fail}项不通过, ${warn}项警告\n${results.filter(r => r.status !== 'pass').map(r => `- [${r.status === 'fail' ? '❌' : '⚠️'}] ${r.message} (${r.rule})`).join('\n')}`,
+          };
+        }}
+      /> : undefined}
+      onAssistantToggle={() => setShowAI(value => !value)}
+    />
   );
 }
 

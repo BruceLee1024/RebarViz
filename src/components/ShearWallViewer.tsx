@@ -1,22 +1,25 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
-import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
+import { wallDistributedReinforcement } from '@/lib/wall-reinforcement';
+import { FittedCamera } from './FittedCamera';
+
+import { ViewerControls } from './ViewerControls';
+
+import { useMemo, useState } from 'react';
+import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
-import { Maximize2, Minimize2 } from 'lucide-react';
+
 import { useFullscreen } from '@/lib/useFullscreen';
 import * as THREE from 'three';
 import type { ShearWallParams, RebarMeshInfo } from '@/lib/types';
 import { parseSlabRebar, parseRebar, parseStirrup, gradeLabel } from '@/lib/rebar';
 import { S } from '@/lib/constants';
+import { wallOpening, wallTiePositions } from '@/lib/quantity-geometry';
+import { createTieBarCurves, staggerTiePositions } from '@/lib/rebar-shapes';
+import { HoopProfile } from './three/HoopProfile';
+import { TieBarMesh } from './three/TieBar';
 
-function CameraController({ targetPosition }: { targetPosition: [number, number, number] | null }) {
-  const { camera } = useThree();
-  useEffect(() => {
-    if (targetPosition) { camera.position.set(...targetPosition); camera.updateProjectionMatrix(); }
-  }, [targetPosition, camera]);
-  return null;
-}
+
 
 function InfoTooltip({ info }: { info: RebarMeshInfo }) {
   const colorMap: Record<string, string> = {
@@ -95,70 +98,24 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
   const boundaryStirInfo: RebarMeshInfo = { type: 'boundaryStirrup', label: '边缘构件箍筋', detail: `${boundaryTypeLabel} · ${params.boundaryStirrup} · ${gradeLabel(boundaryStir.grade)} Φ${boundaryStir.diameter}@${boundaryStir.spacingDense}` };
   const tieInfo: RebarMeshInfo | null = tie ? { type: 'wallTieBar', label: '拉结筋', detail: `${params.tieBar} · ${gradeLabel(tie.grade)} Φ${tie.diameter}@${tie.spacing}，连接双排分布筋` } : null;
   const openingInfo: RebarMeshInfo | null = params.hasOpening ? { type: 'wallOpeningRebar', label: '洞口补强筋', detail: `${params.openingWidth}×${params.openingHeight}洞口 · 侧边${params.openingVertBar || '未设'} · 上下${params.openingHorizBar || '未设'}` } : null;
-  const openingBox = params.hasOpening ? {
-    w: Math.min(params.openingWidth || 1200, params.lw - 2 * (params.boundaryLength || Math.max(params.bw, 400))),
-    h: Math.min(params.openingHeight || 1500, params.hw - 200),
-    bottom: Math.max(params.openingBottom || 900, 0),
-    cx: params.openingOffsetX || 0,
-  } : null;
+  const hole = wallOpening(params)[0];
+  const openingBox = hole ? { w: hole.x1 - hole.x0, h: hole.y1 - hole.y0, bottom: hole.y0, cx: (hole.x0 + hole.x1) / 2 } : null;
+  const horizontalOffset = BW / 2 - COVER - horiz.diameter * S / 2;
+  const tieDiameter = tie?.diameter || 6, horizDiameter = horiz.diameter, boundaryDiameter = boundaryStir.diameter;
+  const tieCurve = useMemo(() => createTieBarCurves({ sideOffset: horizontalOffset, tieDiameter, sideBarDiameter: horizDiameter }).fullCurve, [horizontalOffset, tieDiameter, horizDiameter]);
   const openingLeft = openingBox ? openingBox.cx * S - (openingBox.w * S) / 2 : 0;
   const openingRight = openingBox ? openingBox.cx * S + (openingBox.w * S) / 2 : 0;
   const openingBottomY = openingBox ? openingBox.bottom * S : 0;
   const openingTopY = openingBox ? openingBottomY + openingBox.h * S : 0;
 
+  const distributed = wallDistributedReinforcement(params);
   // Vertical distributed bars positions (two rows, front and back face)
-  const vertBars = (() => {
-    const positions: { x: number; z: number; yCenter: number; height: number }[] = [];
-    const wallInnerL = LW - 2 * BL; // middle zone only
-    const startX = -LW / 2 + BL;
-    const count = Math.max(Math.floor(wallInnerL / (vert.spacing * S)), 1);
-    const spacing = wallInnerL / Math.max(count, 1);
-    for (let i = 0; i <= count; i++) {
-      const x = startX + i * spacing;
-      const faces = [BW / 2 - COVER, -(BW / 2 - COVER)];
-      for (const z of faces) {
-        if (openingBox && x >= openingLeft && x <= openingRight) {
-          if (openingBottomY > 0.02) positions.push({ x, z, yCenter: openingBottomY / 2, height: openingBottomY });
-          if (openingTopY < HW - 0.02) positions.push({ x, z, yCenter: (openingTopY + HW) / 2, height: HW - openingTopY });
-        } else {
-          positions.push({ x, z, yCenter: HW / 2, height: HW });
-        }
-      }
-    }
-    return positions;
-  })();
+  const vertBars = distributed.vertBars;
 
   // Horizontal distributed bars positions
-  const horizBars = (() => {
-    const bars: { xCenter: number; y: number; z: number; length: number }[] = [];
-    const spacing = horiz.spacing * S;
-    for (let y = spacing; y < HW - 0.05; y += spacing) {
-      for (const z of [BW / 2 - COVER, -(BW / 2 - COVER)]) {
-        if (openingBox && y >= openingBottomY && y <= openingTopY) {
-          const leftLen = Math.max(openingLeft + LW / 2, 0);
-          const rightLen = Math.max(LW / 2 - openingRight, 0);
-          if (leftLen > 0.02) bars.push({ xCenter: -LW / 2 + leftLen / 2, y, z, length: leftLen });
-          if (rightLen > 0.02) bars.push({ xCenter: openingRight + rightLen / 2, y, z, length: rightLen });
-        } else {
-          bars.push({ xCenter: 0, y, z, length: LW });
-        }
-      }
-    }
-    return bars;
-  })();
+  const horizBars = distributed.horizBars;
 
-  const tieBars = (() => {
-    if (!tie) return [] as { x: number; y: number }[];
-    const xStart = -LW / 2 + BL + tie.spacing * S;
-    const xEnd = LW / 2 - BL - tie.spacing * S;
-    const yStart = tie.spacing * S;
-    const yEnd = HW - tie.spacing * S;
-    const xs: number[] = [];
-    const ys: number[] = [];
-    for (let x = xStart; x <= xEnd + 1e-6; x += tie.spacing * S) xs.push(x);
-    for (let y = yStart; y <= yEnd + 1e-6; y += tie.spacing * S) ys.push(y);
-    return xs.flatMap(x => ys.map(y => ({ x, y })));
-  })();
+  const tieBars = wallTiePositions(params).map(p => ({ x: p.x * S, y: p.y * S }));
 
   // Boundary element rebar positions (both ends)
   const boundaryBars = (() => {
@@ -166,15 +123,15 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
     const perSide = Math.max(Math.round(boundaryR.count / 2), 2);
     // Left boundary
     for (let i = 0; i < perSide; i++) {
-      const x = -LW / 2 + COVER + (boundaryInnerLength * i) / Math.max(perSide - 1, 1);
-      positions.push({ x, z: boundaryInnerDepth / 2, side: 'left' });
-      positions.push({ x, z: -(boundaryInnerDepth / 2), side: 'left' });
+      const x = -(LW / 2 - BL / 2) - boundaryInnerLength / 2 + boundaryStir.diameter * S + boundaryR.diameter * S / 2 + ((boundaryInnerLength - (2 * boundaryStir.diameter + boundaryR.diameter) * S) * i) / Math.max(perSide - 1, 1);
+      positions.push({ x, z: boundaryInnerDepth / 2 - (boundaryStir.diameter + boundaryR.diameter / 2) * S, side: 'left' });
+      positions.push({ x, z: -(boundaryInnerDepth / 2 - (boundaryStir.diameter + boundaryR.diameter / 2) * S), side: 'left' });
     }
     // Right boundary
     for (let i = 0; i < perSide; i++) {
-      const x = LW / 2 - COVER - (boundaryInnerLength * i) / Math.max(perSide - 1, 1);
-      positions.push({ x, z: boundaryInnerDepth / 2, side: 'right' });
-      positions.push({ x, z: -(boundaryInnerDepth / 2), side: 'right' });
+      const x = (LW / 2 - BL / 2) + boundaryInnerLength / 2 - boundaryStir.diameter * S - boundaryR.diameter * S / 2 - ((boundaryInnerLength - (2 * boundaryStir.diameter + boundaryR.diameter) * S) * i) / Math.max(perSide - 1, 1);
+      positions.push({ x, z: boundaryInnerDepth / 2 - (boundaryStir.diameter + boundaryR.diameter / 2) * S, side: 'right' });
+      positions.push({ x, z: -(boundaryInnerDepth / 2 - (boundaryStir.diameter + boundaryR.diameter / 2) * S), side: 'right' });
     }
     return positions;
   })();
@@ -193,45 +150,9 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
     return positions;
   })();
 
-  // Boundary stirrup curve
-  const boundaryStirCurve = useMemo(() => {
-    const w2 = boundaryInnerLength / 2;
-    const h2 = boundaryInnerDepth / 2;
-    const r = 0.01;
-    const shape = new THREE.Shape();
-    shape.moveTo(-w2 + r, -h2);
-    shape.lineTo(w2 - r, -h2);
-    shape.quadraticCurveTo(w2, -h2, w2, -h2 + r);
-    shape.lineTo(w2, h2 - r);
-    shape.quadraticCurveTo(w2, h2, w2 - r, h2);
-    shape.lineTo(-w2 + r, h2);
-    shape.quadraticCurveTo(-w2, h2, -w2, h2 - r);
-    shape.lineTo(-w2, -h2 + r);
-    shape.quadraticCurveTo(-w2, -h2, -w2 + r, -h2);
-    const pts = shape.getPoints(32);
-    return new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p.x, 0, p.y)), true);
-  }, [boundaryInnerLength, boundaryInnerDepth]);
-
-  const boundaryOuterStirCurve = useMemo(() => {
-    if ((boundaryForm !== 'wingWall' && boundaryForm !== 'cornerWall') || boundaryProjection <= 0) return null;
-    const outerWidth = boundaryForm === 'wingWall' ? BL : BL * 0.75;
-    const w2 = Math.max(outerWidth / 2 - COVER, outerWidth * 0.25);
-    const h2 = Math.max(boundaryProjection / 2 - COVER, boundaryProjection * 0.25);
-    const r = 0.01;
-    const shape = new THREE.Shape();
-    shape.moveTo(-w2 + r, -h2);
-    shape.lineTo(w2 - r, -h2);
-    shape.quadraticCurveTo(w2, -h2, w2, -h2 + r);
-    shape.lineTo(w2, h2 - r);
-    shape.quadraticCurveTo(w2, h2, w2 - r, h2);
-    shape.lineTo(-w2 + r, h2);
-    shape.quadraticCurveTo(-w2, h2, -w2, h2 - r);
-    shape.lineTo(-w2, -h2 + r);
-    shape.quadraticCurveTo(-w2, -h2, -w2 + r, -h2);
-    const pts = shape.getPoints(32);
-    return new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p.x, 0, p.y)), true);
-  }, [boundaryForm, boundaryProjection, BL, COVER]);
-
+  const boundaryOuterStirCurve = (boundaryForm === 'wingWall' || boundaryForm === 'cornerWall') && boundaryProjection > 0;
+  const outerHoopWidth = Math.max((boundaryForm === 'wingWall' ? BL : BL * .75) - 2 * COVER - boundaryStir.diameter * S, .04);
+  const outerHoopDepth = Math.max(boundaryProjection - 2 * COVER - boundaryStir.diameter * S, .04);
   const boundaryOuterTieLen = Math.max(BW / 2 + boundaryProjection - COVER - boundaryInnerDepth / 2, 0);
   const boundaryOuterTiePoints = (() => {
     if (!boundaryOuterStirCurve || boundaryOuterTieLen <= 0.02) return [] as { x: number; z: number }[];
@@ -244,6 +165,14 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
       z,
     })));
   })();
+
+  const outerTieCurve = useMemo(() => createTieBarCurves({ sideOffset: boundaryOuterTieLen / 2, tieDiameter: boundaryDiameter, sideBarDiameter: boundaryDiameter }).fullCurve, [boundaryOuterTieLen, boundaryDiameter]);
+  const wallBlocks = openingBox ? [
+    { x: (-LW / 2 + openingLeft) / 2, y: HW / 2, w: openingLeft + LW / 2, h: HW },
+    { x: (LW / 2 + openingRight) / 2, y: HW / 2, w: LW / 2 - openingRight, h: HW },
+    { x: openingBox.cx * S, y: openingBottomY / 2, w: openingBox.w * S, h: openingBottomY },
+    { x: openingBox.cx * S, y: (HW + openingTopY) / 2, w: openingBox.w * S, h: HW - openingTopY },
+  ].filter(b => b.w > 0 && b.h > 0) : [{ x: 0, y: HW / 2, w: LW, h: HW }];
 
   const [hoveredType, setHoveredType] = useState<string | null>(null);
 
@@ -262,7 +191,8 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
     const ys: number[] = [];
     const s = boundaryStir.spacingDense * S;
     for (let y = s; y < HW - 0.05; y += s) ys.push(y);
-    return ys;
+    const horizontalYs = Array.from({ length: Math.floor(HW / (horiz.spacing * S)) }, (_, i) => (i + 1) * horiz.spacing * S);
+    return staggerTiePositions(ys, horizontalYs, (boundaryStir.diameter + horiz.diameter) * S / 2 + .002, .03, HW - .03);
   })();
 
   return (
@@ -273,11 +203,11 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
         <meshBasicMaterial />
       </mesh>
 
-      {/* Wall body */}
-      <mesh position={[0, HW / 2, 0]}>
-        <boxGeometry args={[LW, HW, BW]} />
+      {/* Real opening: no concrete or opaque mask inside the hole. */}
+      {wallBlocks.map((b, i) => <mesh key={`wall-${i}`} position={[b.x, b.y, 0]}>
+        <boxGeometry args={[b.w, b.h, BW]} />
         <meshPhysicalMaterial color="#BDC3C7" transparent opacity={concreteOpacity} side={THREE.DoubleSide} depthWrite={false} roughness={0.8} />
-      </mesh>
+      </mesh>)}
       <lineSegments position={[0, HW / 2, 0]}>
         <edgesGeometry args={[new THREE.BoxGeometry(LW, HW, BW)]} />
         <lineBasicMaterial color="#94A3B8" />
@@ -343,10 +273,6 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
 
       {openingBox && (
         <group>
-          <mesh position={[openingBox.cx * S, openingBottomY + (openingBox.h * S) / 2, 0]}>
-            <boxGeometry args={[openingBox.w * S, openingBox.h * S, BW * 1.2]} />
-            <meshBasicMaterial color="#f8fafc" transparent opacity={0.92} depthWrite={false} />
-          </mesh>
           <lineSegments position={[openingBox.cx * S, openingBottomY + (openingBox.h * S) / 2, 0]}>
             <edgesGeometry args={[new THREE.BoxGeometry(openingBox.w * S, openingBox.h * S, BW * 1.02)]} />
             <lineBasicMaterial color="#EC4899" transparent opacity={0.7} />
@@ -368,11 +294,11 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
 
       {/* Horizontal distributed bars */}
       {horizBars.map((bar, i) => (
-        <mesh key={`h${i}`} position={[bar.xCenter, bar.y, bar.z]}
+        <mesh key={`h${i}`} position={[bar.xCenter, bar.y, bar.z]} rotation={[0, 0, Math.PI / 2]}
           onClick={(e) => handleClick(e, horizInfo)}
           onPointerOver={(e) => { e.stopPropagation(); setHoveredType('horizBar'); document.body.style.cursor = 'pointer'; }}
           onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}>
-          <boxGeometry args={[bar.length, horiz.diameter * S, horiz.diameter * S]} />
+          <cylinderGeometry args={[horiz.diameter * S / 2, horiz.diameter * S / 2, bar.length, 8]} />
           <meshStandardMaterial color={barColor('horizBar', '#2980B9', '#3498DB')} roughness={0.4} metalness={0.6}
             emissive={isSelected('horizBar') ? '#3498DB' : '#000'} emissiveIntensity={isSelected('horizBar') ? 0.3 : 0} />
         </mesh>
@@ -401,79 +327,28 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
         </mesh>
       ))}
 
-      {/* Boundary element stirrups (both ends) */}
-      {[-1, 1].map(side =>
-        boundaryStirYs.map((y, i) => (
-          <mesh key={`bs${side}${i}`} position={[side * (LW / 2 - BL / 2), y, 0]}
-            onClick={(e) => handleClick(e, boundaryStirInfo)}
-            onPointerOver={(e) => { e.stopPropagation(); setHoveredType('boundaryStirrup'); document.body.style.cursor = 'pointer'; }}
-            onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}>
-            <tubeGeometry args={[boundaryStirCurve, 32, boundaryStir.diameter * S / 2, 6, true]} />
-            <meshStandardMaterial color={barColor('boundaryStirrup', '#27AE60', '#2ECC71')} roughness={0.4} metalness={0.6}
-              emissive={isSelected('boundaryStirrup') ? '#2ECC71' : '#000'} emissiveIntensity={isSelected('boundaryStirrup') ? 0.3 : 0} />
-          </mesh>
-        ))
-      )}
-
-      {/* Outer stirrup envelopes for wing-wall / corner-wall forms */}
-      {boundaryOuterStirCurve && [-1, 1].map(side =>
-        boundaryStirYs.map((y, i) => (
-          <mesh
-            key={`bos${side}${i}`}
-            position={[side * (LW / 2 - BL / 2), y, BW / 2 + boundaryProjection / 2]}
-            onClick={(e) => handleClick(e, boundaryStirInfo)}
-            onPointerOver={(e) => { e.stopPropagation(); setHoveredType('boundaryStirrup'); document.body.style.cursor = 'pointer'; }}
-            onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}
-          >
-            <tubeGeometry args={[boundaryOuterStirCurve, 32, boundaryStir.diameter * S / 2, 6, true]} />
-            <meshStandardMaterial
-              color={barColor('boundaryStirrup', '#27AE60', '#2ECC71')}
-              roughness={0.4}
-              metalness={0.6}
-              emissive={isSelected('boundaryStirrup') ? '#2ECC71' : '#000'}
-              emissiveIntensity={isSelected('boundaryStirrup') ? 0.3 : 0}
-            />
-          </mesh>
-        ))
-      )}
-
-      {boundaryOuterTiePoints.flatMap((point, pi) =>
-        boundaryStirYs.map((y, yi) => (
-          <mesh
-            key={`bot${pi}${yi}`}
-            position={[point.x, y, point.z]}
-            onClick={(e) => handleClick(e, boundaryStirInfo)}
-            onPointerOver={(e) => { e.stopPropagation(); setHoveredType('boundaryStirrup'); document.body.style.cursor = 'pointer'; }}
-            onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}
-          >
-            <boxGeometry args={[boundaryStir.diameter * S, boundaryStir.diameter * S, boundaryOuterTieLen]} />
-            <meshStandardMaterial
-              color={barColor('boundaryStirrup', '#27AE60', '#2ECC71')}
-              roughness={0.4}
-              metalness={0.6}
-              emissive={isSelected('boundaryStirrup') ? '#2ECC71' : '#000'}
-              emissiveIntensity={isSelected('boundaryStirrup') ? 0.3 : 0}
-            />
-          </mesh>
-        ))
-      )}
-
-      {/* Tie bars through wall thickness */}
+      {/* Independent hoops and crossties retain their own hook ends. */}
+      {[-1, 1].flatMap(side => boundaryStirYs.map((y, i) => (
+        <group key={`bs${side}${i}`} position={[side * (LW / 2 - BL / 2), y, 0]} onClick={e => handleClick(e, boundaryStirInfo)}>
+          <HoopProfile width={boundaryInnerLength - boundaryStir.diameter * S} height={boundaryInnerDepth - boundaryStir.diameter * S} diameter={boundaryStir.diameter} legs={boundaryStir.legs} plane="xz" color={barColor('boundaryStirrup', '#27AE60', '#2ECC71')} />
+        </group>
+      )))}
+      {boundaryOuterStirCurve && [-1, 1].flatMap(side => boundaryStirYs.map((y, i) => (
+        <group key={`bos${side}${i}`} position={[side * (LW / 2 - BL / 2), y + boundaryStir.diameter * S + .003, BW / 2 + boundaryProjection / 2]} onClick={e => handleClick(e, boundaryStirInfo)}>
+          <HoopProfile width={outerHoopWidth} height={outerHoopDepth} diameter={boundaryStir.diameter} plane="xz" color={barColor('boundaryStirrup', '#27AE60', '#2ECC71')} />
+        </group>
+      )))}
+      {boundaryOuterTiePoints.flatMap((point, pi) => boundaryStirYs.map((y, yi) => (
+        <TieBarMesh key={`bot${pi}${yi}`} position={[point.x, y, point.z]} curve={outerTieCurve} radius={boundaryStir.diameter * S / 2} info={boundaryStirInfo} selected={isSelected('boundaryStirrup')} onSelect={onSelect} />
+      )))}
       {tieInfo && tieBars.map((p, i) => (
-        <mesh key={`tie-${i}`} position={[p.x, p.y, 0]} rotation={[Math.PI / 2, 0, 0]}
-          onClick={(e) => handleClick(e, tieInfo)}
-          onPointerOver={(e) => { e.stopPropagation(); setHoveredType('wallTieBar'); document.body.style.cursor = 'pointer'; }}
-          onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}>
-          <cylinderGeometry args={[tie!.diameter * S / 2, tie!.diameter * S / 2, BW - 2 * COVER, 8]} />
-          <meshStandardMaterial color={barColor('wallTieBar', '#16A085', '#1ABC9C')} roughness={0.4} metalness={0.6}
-            emissive={isSelected('wallTieBar') ? '#1ABC9C' : '#000'} emissiveIntensity={isSelected('wallTieBar') ? 0.3 : 0} />
-        </mesh>
+        <TieBarMesh key={`tie-${i}`} position={[p.x, p.y, 0]} curve={tieCurve} radius={tie!.diameter * S / 2} info={tieInfo} selected={isSelected('wallTieBar')} onSelect={onSelect} />
       ))}
 
       {/* Opening reinforcement */}
       {openingInfo && openingVert && [openingLeft, openingRight].flatMap((x, xi) => [
-        BW / 2 - COVER,
-        -(BW / 2 - COVER),
+        BW / 2 - COVER - openingVert.diameter * S / 2 - horiz.diameter * S,
+        -(BW / 2 - COVER - openingVert.diameter * S / 2 - horiz.diameter * S),
       ].map((z, zi) => (
         <mesh key={`ov-${xi}-${zi}`} position={[x, (openingBottomY + openingTopY) / 2, z]}
           onClick={(e) => handleClick(e, openingInfo)}
@@ -485,14 +360,14 @@ function ShearWallScene({ params, selected, onSelect, cutPosition, concreteOpaci
         </mesh>
       )))}
       {openingInfo && openingHoriz && [openingBottomY, openingTopY].flatMap((y, yi) => [
-        BW / 2 - COVER,
-        -(BW / 2 - COVER),
+        BW / 2 - COVER - openingHoriz.diameter * S / 2,
+        -(BW / 2 - COVER - openingHoriz.diameter * S / 2),
       ].map((z, zi) => (
-        <mesh key={`oh-${yi}-${zi}`} position={[openingBox!.cx * S, y, z]}
+        <mesh key={`oh-${yi}-${zi}`} position={[openingBox!.cx * S, y, z]} rotation={[0, 0, Math.PI / 2]}
           onClick={(e) => handleClick(e, openingInfo)}
           onPointerOver={(e) => { e.stopPropagation(); setHoveredType('wallOpeningRebar'); document.body.style.cursor = 'pointer'; }}
           onPointerOut={() => { setHoveredType(null); document.body.style.cursor = 'auto'; }}>
-          <boxGeometry args={[Math.max(openingBox!.w * S, 0.02), openingHoriz.diameter * S, openingHoriz.diameter * S]} />
+          <cylinderGeometry args={[openingHoriz.diameter * S / 2, openingHoriz.diameter * S / 2, Math.max(openingBox!.w * S, .02), 8]} />
           <meshStandardMaterial color={barColor('wallOpeningRebar', '#EC4899', '#F472B6')} roughness={0.4} metalness={0.6}
             emissive={isSelected('wallOpeningRebar') ? '#F472B6' : '#000'} emissiveIntensity={isSelected('wallOpeningRebar') ? 0.3 : 0} />
         </mesh>
@@ -534,8 +409,8 @@ export default function ShearWallViewer({ params, cutPosition, showCut, onCutPos
   const camDist = Math.max(Math.max(params.lw, params.hw) * S * 0.85, 4.5);
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
+    <div data-viewer className="rv-viewer">
+      <div className="rv-viewer-toolbar flex items-center gap-2 flex-wrap">
         <button
           onClick={() => { onShowCutChange(!showCut); if (showCut) onCutPositionChange(null); else onCutPositionChange(HW / 2); }}
           className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${showCut ? 'bg-accent text-white' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50'}`}>
@@ -557,43 +432,27 @@ export default function ShearWallViewer({ params, cutPosition, showCut, onCutPos
         </div>
       )}
 
-      <div ref={fsContainerRef} className={`relative w-full bg-surface overflow-hidden ${fsClass}`}>
+      <div ref={fsContainerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${fsClass}`}>
         {selected && <InfoTooltip info={selected} />}
 
-        <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5">
-          {[
+        <ViewerControls views={[
             { name: '正面', pos: [0, HW / 2, camDist] as [number, number, number] },
             { name: '侧面', pos: [camDist, HW / 2, 0] as [number, number, number] },
             { name: '俯视', pos: [0, camDist + HW * 0.2, 0.1] as [number, number, number] },
             { name: '透视', pos: [camDist * 0.75, HW * 0.6, camDist * 0.75] as [number, number, number] },
-          ].map(a => (
-            <button key={a.name} onClick={() => setCameraTarget(a.pos)}
-              className="px-2 py-1 rounded-md text-[11px] font-medium cursor-pointer bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors">
-              {a.name}
-            </button>
-          ))}
-          <div className="flex items-center gap-1 ml-1 px-2 py-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60">
-            <span className="text-[11px] text-muted">透明</span>
-            <input type="range" min={0} max={0.4} step={0.02} value={concreteOpacity}
-              onChange={e => setConcreteOpacity(parseFloat(e.target.value))} className="w-12 accent-accent" />
-          </div>
-          <button onClick={fsToggle}
-            className="ml-1 p-1 rounded-md bg-white/80 backdrop-blur-sm border border-gray-200/60 text-muted hover:bg-white hover:text-primary transition-colors cursor-pointer"
-            title={fsActive ? '退出全屏 (Esc)' : '全屏显示'}>
-            {fsActive ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
-        </div>
+          ]} onView={setCameraTarget} opacity={concreteOpacity} onOpacity={setConcreteOpacity}
+          fullscreen={fsActive} onFullscreen={fsToggle} />
 
-        <Canvas camera={{ position: [camDist * 0.75, HW * 0.6, camDist * 0.75], fov: 45 }} scene={{ background: new THREE.Color('#f8fafc') }}>
-          <CameraController targetPosition={cameraTarget} />
+        <Canvas camera={{ position: [camDist * 0.75, HW * 0.6, camDist * 0.75], fov: 45 }} scene={{ background: new THREE.Color('#071725') }}>
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[camDist * 0.75, HW * 0.6, camDist * 0.75]} center={[0, HW / 2, 0]} bounds={[params.lw * S, HW + .5, Math.max(params.bw * S, .6)]} />
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 8, 5]} intensity={0.8} castShadow />
           <ShearWallScene params={params} selected={selected} onSelect={setSelected} cutPosition={cutPosition} concreteOpacity={concreteOpacity} />
-          <Grid args={[20, 20]} position={[0, -0.01, 0]} cellColor="#E2E8F0" sectionColor="#E2E8F0" fadeDistance={20} />
+          <Grid args={[20, 20]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={20} />
           <axesHelper args={[1]} />
           <OrbitControls target={[0, HW / 2, 0]} enableDamping dampingFactor={0.1} />
         </Canvas>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
+        <div className="rv-viewer-hints absolute bottom-3 left-1/2 -translate-x-1/2 bg-primary/70 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm pointer-events-none">
           左键旋转 · 右键平移 · 滚轮缩放 · 点击钢筋查看详情
         </div>
       </div>

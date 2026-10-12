@@ -1,15 +1,14 @@
 'use client';
 
-import { Sidebar, MobileBottomNav } from './Sidebar';
+import { ComponentDock } from './ComponentDock';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-[calc(100vh-3.5rem)]">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto pb-16 md:pb-0 min-w-0 bg-gray-50/50">
+    <div className="rv-theme rv-app-shell">
+      <ComponentDock />
+      <main className="rv-app-content">
         {children}
       </main>
-      <MobileBottomNav />
     </div>
   );
 }
