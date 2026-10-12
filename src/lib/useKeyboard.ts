@@ -42,7 +42,8 @@ export function useKeyboard(bindings: KeyBinding[], enabled = true) {
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     // 如果焦点在输入框，忽略快捷键
     const target = e.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+    if (e.repeat || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable
+      || (target.closest('button') && (e.key === ' ' || e.key === 'Enter'))) {
       return;
     }
 
@@ -77,6 +78,9 @@ export function createViewerBindings(actions: {
   toggleDimensions?: () => void;
   takeScreenshot?: () => void;
   toggleAnimation?: () => void;
+  previousStep?: () => void;
+  nextStep?: () => void;
+  exitAnimation?: () => void;
   setViewPreset?: (preset: 'front' | 'side' | 'top' | 'iso') => void;
 }): KeyBinding[] {
   const bindings: KeyBinding[] = [];
@@ -93,6 +97,9 @@ export function createViewerBindings(actions: {
   if (actions.toggleAnimation) {
     bindings.push({ key: ' ', action: actions.toggleAnimation, description: '播放/暂停动画' });
   }
+  if (actions.previousStep) bindings.push({ key: 'arrowleft', action: actions.previousStep, description: '动画上一步' });
+  if (actions.nextStep) bindings.push({ key: 'arrowright', action: actions.nextStep, description: '动画下一步' });
+  if (actions.exitAnimation) bindings.push({ key: 'escape', action: actions.exitAnimation, description: '退出施工动画' });
   if (actions.setViewPreset) {
     bindings.push(
       { key: '1', action: () => actions.setViewPreset!('front'), description: '正面视图' },

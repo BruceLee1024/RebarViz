@@ -83,6 +83,48 @@
 .rv-beam-viewer { height: 100%; display: flex; flex-direction: column; gap: 8px; }
 .rv-viewer-toolbar { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-bottom: 3px; }
 .rv-viewer-toolbar button { font-size: 11px; min-height: 30px; white-space: nowrap; }
+.rv-construction { flex-shrink: 0; min-width: 0; border: 1px solid #245268; border-radius: 7px; background: linear-gradient(110deg, #0b2839, #081b2a); padding: 10px 12px; }
+.rv-model-workspace:has(.rv-construction) { overflow-y: auto; }
+.rv-model-stage:has(.rv-construction) { min-height: 480px; flex-shrink: 0; }
+.rv-model-workspace:not(.analysis-expanded):has(.rv-construction) .rv-analysis-dock:not(.is-collapsed) { flex-basis: 160px; height: 160px; }
+.rv-construction-header, .rv-construction-title, .rv-construction-controls { display: flex; align-items: center; gap: 7px; }
+.rv-construction-header { justify-content: space-between; gap: 12px; }
+.rv-construction-title { white-space: nowrap; color: #cdebf7; font-size: 11px; }
+.rv-construction-title > span { width: 6px; height: 6px; border-radius: 50%; background: #557489; }
+.rv-construction-title > span.is-playing { background: #34d8e9; box-shadow: 0 0 9px #34d8e980; }
+.rv-construction-title small { color: #80a9bf; font-variant-numeric: tabular-nums; margin-left: 3px; }
+.rv-construction-controls { gap: 4px; }
+.rv-construction-controls button, .rv-construction-controls select { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 4px 6px; border: 1px solid #285168; border-radius: 4px; color: #a8cedf; background: #0c2637; font-size: 10px; cursor: pointer; }
+.rv-construction-controls button:hover:not(:disabled) { color: #dcf9ff; border-color: #40b8cc; }
+.rv-construction-controls button:disabled { opacity: .3; cursor: default; }
+.rv-construction-controls .rv-construction-play { min-width: 58px; background: #123c4c; border-color: #328093; color: #76eef5; }
+.rv-construction button:focus-visible, .rv-construction select:focus-visible { outline: 2px solid #5ce9f3; outline-offset: 2px; }
+.rv-construction-stages { position: relative; display: flex; overflow-x: auto; gap: 5px; padding: 10px 0 8px; scrollbar-width: thin; scrollbar-color: #25546a transparent; }
+.rv-construction-fullscreen { position: absolute; z-index: 20; bottom: 12px; left: 12px; right: 12px; }
+.rv-viewer-canvas:has(.rv-construction-fullscreen .rv-construction) .rv-viewer-hints { display: none; }
+.rv-construction-stages button { flex: 1 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 31px; padding: 5px 8px; border: 1px solid #1e4257; border-radius: 4px; color: #6f9bb3; font-size: 10px; white-space: nowrap; background: #081d2c; cursor: pointer; }
+.rv-construction-stages button > span { display: flex; align-items: center; justify-content: center; width: 17px; height: 17px; font-size: 9px; border-radius: 3px; background: #102d40; color: #7baabe; }
+.rv-construction-stages button.is-complete { color: #9ac5d7; }
+.rv-construction-stages button.is-complete > span { color: #54cfca; }
+.rv-construction-stages button.is-current { color: #b6faff; background: #10394b; border-color: #30b6cc; box-shadow: inset 0 0 12px #24c1d410; }
+.rv-construction-stages button.is-current > span { background: #18bfd2; color: #052331; }
+.rv-construction-progress { height: 2px; overflow: hidden; background: #1a3e52; }
+.rv-construction-progress > span { display: block; width: 100%; height: 100%; transform-origin: left; transform: scaleX(var(--stage-progress, 0)); background: #35d5e8; }
+.rv-construction-caption { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 8px; }
+.rv-construction-caption p { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0; font-size: 10px; line-height: 1.6; }
+.rv-construction-caption b { color: #b6dbe9; font-weight: 500; white-space: nowrap; }
+.rv-construction-caption p span { color: #7da9bd; }
+.rv-construction-caption button { flex-shrink: 0; color: #79a2b8; border: 1px solid #254b61; border-radius: 4px; font-size: 10px; padding: 3px 7px; cursor: pointer; }
+.rv-construction-caption button[aria-pressed="true"] { color: #64e0eb; border-color: #2b788e; background: #0d3445; }
+@media (max-width: 600px) {
+  .rv-construction { padding: 9px; }
+  .rv-construction-header { flex-wrap: wrap; gap: 8px; }
+  .rv-construction-controls { flex: 1; justify-content: flex-end; }
+  .rv-construction-stages { padding-top: 8px; }
+  .rv-construction-stages button { min-height: 35px; }
+  .rv-construction-caption p { flex-direction: column; gap: 2px; }
+  .rv-construction-caption { align-items: flex-start; }
+}
 .rv-viewer-toolbar > div { margin-left: auto; }
 .rv-viewer-toolbar > div:has(button) { margin-left: 0; }
 .rv-viewer-canvas { flex: 1; min-height: 0; border: 1px solid #1b4055; border-radius: 7px; background: #071725; }

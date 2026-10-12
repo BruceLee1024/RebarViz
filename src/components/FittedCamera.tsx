@@ -1,16 +1,17 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useEffect, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 type Point = [number, number, number];
 
 /** Refit when the available workbench area or model dimensions change. */
-export function FittedCamera({ targetPosition, initialPosition, center, bounds }: {
-  targetPosition: Point | null; initialPosition: Point; center: Point; bounds: Point;
+export function FittedCamera({ targetPosition, initialPosition, center, bounds, smooth = false }: {
+  targetPosition: Point | null; initialPosition: Point; center: Point; bounds: Point; smooth?: boolean;
 }) {
   const { camera, size } = useThree();
+  const goal = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
   const [px, py, pz] = targetPosition ?? initialPosition;
   const [cx, cy, cz] = center;
   const [width, height, depth] = bounds;
@@ -32,9 +33,17 @@ export function FittedCamera({ targetPosition, initialPosition, center, bounds }
         }
       }
     }
-    camera.position.copy(target).addScaledVector(direction, distance * 1.22);
-    camera.lookAt(target);
+    const position = target.clone().addScaledVector(direction, distance * 1.22);
+    if (smooth && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) goal.current = { position, target };
+    else { goal.current = null; camera.position.copy(position); camera.lookAt(target); }
     camera.updateProjectionMatrix();
-  }, [camera, size.width, size.height, px, py, pz, cx, cy, cz, width, height, depth]);
+  }, [camera, size.width, size.height, px, py, pz, cx, cy, cz, width, height, depth, smooth]);
+  useFrame((_, delta) => {
+    const next = goal.current;
+    if (!next) return;
+    camera.position.lerp(next.position, 1 - Math.exp(-10 * Math.min(delta, .05)));
+    camera.lookAt(next.target);
+    if (camera.position.distanceToSquared(next.position) < .00001) { camera.position.copy(next.position); goal.current = null; }
+  });
   return null;
 }

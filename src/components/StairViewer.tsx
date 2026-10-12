@@ -1,12 +1,17 @@
 'use client';
 
+import { ConstructionTimeline } from './ConstructionTimeline';
+import { ConstructionGroup } from './three/ConstructionGroup';
+import { useConstructionPlayback } from '@/lib/useConstructionPlayback';
+import { stairConstructionSteps } from '@/lib/construction-playback';
+
 import { stairReinforcement } from '@/lib/stair-reinforcement';
 
 import { FittedCamera } from './FittedCamera';
 
 import { ViewerControls } from './ViewerControls';
 
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Line } from '@react-three/drei';
 import { Camera } from 'lucide-react';
@@ -14,7 +19,7 @@ import { useFullscreen } from '@/lib/useFullscreen';
 import * as THREE from 'three';
 import type { StairParams, RebarMeshInfo } from '@/lib/types';
 import { parseSlabRebar, gradeLabel } from '@/lib/rebar';
-import { S, REBAR_MATERIAL, COLOR_STAIR_TOP, COLOR_STAIR_TOP_HI, COLOR_STAIR_BOTTOM, COLOR_STAIR_BOTTOM_HI, COLOR_STAIR_DIST, COLOR_STAIR_DIST_HI, STAIR_CONSTRUCTION_STEPS } from '@/lib/constants';
+import { S, REBAR_MATERIAL, COLOR_STAIR_TOP, COLOR_STAIR_TOP_HI, COLOR_STAIR_BOTTOM, COLOR_STAIR_BOTTOM_HI, COLOR_STAIR_DIST, COLOR_STAIR_DIST_HI } from '@/lib/constants';
 import { roundedRebarPath } from '@/lib/rebar-curve';
 import { CappedRebarTube } from './three/CappedRebarTube';
 import { SectionCutPlane } from './three';
@@ -43,7 +48,7 @@ function StairBar({ position, rotation, length, diameter, color, hiColor, info, 
       scale={[scale, 1, scale]}>
       <cylinderGeometry args={[diameter * S / 2, diameter * S / 2, length, 8]} />
       <meshStandardMaterial color={activeColor} {...REBAR_MATERIAL}
-        emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
+        emissive={activeColor} emissiveIntensity={selected ? 0.3 : 0.12} />
     </mesh>
   );
 }
@@ -65,7 +70,7 @@ function TubeBar({ path, diameter, color, hiColor, info, selected, onSelect }: {
   return (
     <group {...handler}>
       <CappedRebarTube curve={curve} radius={r} segments={160}>
-        <meshStandardMaterial color={activeColor} {...REBAR_MATERIAL} emissive={selected ? hiColor : '#000000'} emissiveIntensity={selected ? .3 : 0} />
+        <meshStandardMaterial color={activeColor} {...REBAR_MATERIAL} emissive={activeColor} emissiveIntensity={selected ? .3 : .12} />
       </CappedRebarTube>
     </group>
   );
@@ -75,10 +80,10 @@ function TubeBar({ path, diameter, color, hiColor, info, selected, onSelect }: {
 // AT 型楼梯 3D 场景
 // ═══════════════════════════════════════════════════════════════════
 
-function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGroups, showDimensions, cutPosition }: {
+function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGroups, activeGroup, showDimensions, cutPosition }: {
   params: StairParams; selected: RebarMeshInfo | null;
   onSelect: (info: RebarMeshInfo | null) => void;
-  concreteOpacity: number; visibleGroups: Set<string> | null;
+  concreteOpacity: number; visibleGroups: Set<string> | null; activeGroup: string | null;
   showDimensions: boolean; cutPosition: number | null;
 }) {
   const steel = useMemo(() => stairReinforcement(params), [params]);
@@ -235,7 +240,7 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
       </mesh>
 
       {/* ═══════════ 混凝土 ═══════════ */}
-      {gv('concrete') && (
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('concrete')} dim={!!activeGroup && activeGroup !== 'concrete'} reference>{(
         <group>
           {/* 梯板底面 (斜面板) */}
           <mesh geometry={slabGeo}>
@@ -295,20 +300,20 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
             <lineBasicMaterial color="#7F8C9A" />
           </lineSegments>
         </group>
-      )}
+      )}</ConstructionGroup>
 
       {/* ═══════════ 下部纵筋 ═══════════ */}
-      {gv('bottom') && botBarZs.map((z, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('bottom')} dim={!!activeGroup && activeGroup !== 'bottom'}>{botBarZs.map((z, i) => {
         const pts = botBarPath.map(p => new THREE.Vector3(p.x, p.y, z));
         return (
           <TubeBar key={`bot-${i}`} path={pts} diameter={botR.diameter}
             color={COLOR_STAIR_BOTTOM} hiColor={COLOR_STAIR_BOTTOM_HI}
             info={botInfo} selected={isSelected('stairBottom')} onSelect={onSelect} />
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══════════ 上部纵筋 ═══════════ */}
-      {gv('top') && topBarZs.map((z, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('top')} dim={!!activeGroup && activeGroup !== 'top'}>{topBarZs.map((z, i) => {
         const ptsLow = topBarPaths.low.map(p => new THREE.Vector3(p.x, p.y, z));
         const ptsHigh = topBarPaths.high.map(p => new THREE.Vector3(p.x, p.y, z));
         return (
@@ -321,11 +326,11 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
               info={topInfo} selected={isSelected('stairTop')} onSelect={onSelect} />
           </group>
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══════════ 分布筋 (垂直于纵筋方向, Z轴) ═══════════ */}
       {/* 下部分布筋: 在底筋外侧 (板底面 + cover + 底筋直径 + 分布筋半径, 竖直方向) */}
-      {gv('dist') && distBarPositions.map((pos, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('dist')} dim={!!activeGroup && activeGroup !== 'dist'}>{distBarPositions.map((pos, i) => {
         const cvDist = (cover + botR.diameter * S + distR.diameter * S / 2) / Math.cos(angle);
         const barY = slope * pos.x - tCosA + cvDist;
         return (
@@ -337,9 +342,9 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
             color={COLOR_STAIR_DIST} hiColor={COLOR_STAIR_DIST_HI}
             info={distInfo} selected={isSelected('stairDist')} onSelect={onSelect} />
         );
-      })}
+      })}</ConstructionGroup>
       {/* 上部分布筋: 在顶筋外侧 (板顶面 - cover - 顶筋直径 - 分布筋半径, 竖直方向) */}
-      {gv('dist') && distBarPositions.map((pos, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('dist')} dim={!!activeGroup && activeGroup !== 'dist'}>{distBarPositions.map((pos, i) => {
         const cvDist = (cover + topR.diameter * S + distR.diameter * S / 2) / Math.cos(angle);
         const barY = slope * pos.x - cvDist;
         return (
@@ -351,7 +356,7 @@ function ATStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
             color={COLOR_STAIR_DIST} hiColor={COLOR_STAIR_DIST_HI}
             info={distInfo} selected={isSelected('stairDist')} onSelect={onSelect} />
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══════════ 尺寸标注 ═══════════ */}
       {showDimensions && (
@@ -520,10 +525,10 @@ function BTStairDimensions({
 // BT 型楼梯 3D 场景
 // ═══════════════════════════════════════════════════════════════════
 
-function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGroups, showDimensions, cutPosition }: {
+function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGroups, activeGroup, showDimensions, cutPosition }: {
   params: StairParams; selected: RebarMeshInfo | null;
   onSelect: (info: RebarMeshInfo | null) => void;
-  concreteOpacity: number; visibleGroups: Set<string> | null;
+  concreteOpacity: number; visibleGroups: Set<string> | null; activeGroup: string | null;
   showDimensions: boolean; cutPosition: number | null;
 }) {
   const steel = useMemo(() => stairReinforcement(params), [params]);
@@ -639,7 +644,7 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
       </mesh>
 
       {/* ═══ 混凝土 ═══ */}
-      {gv('concrete') && (
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('concrete')} dim={!!activeGroup && activeGroup !== 'concrete'} reference>{(
         <group>
           <mesh geometry={flatSlabGeo}>
             <meshPhysicalMaterial color="#BDC3C7" transparent opacity={concreteOpacity} side={THREE.DoubleSide} depthWrite={false} roughness={0.8} />
@@ -703,20 +708,20 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
             <lineBasicMaterial color="#94A3B8" />
           </lineSegments>
         </group>
-      )}
+      )}</ConstructionGroup>
 
       {/* ═══ 下部纵筋 ═══ */}
-      {gv('bottom') && botBarZs.map((z, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('bottom')} dim={!!activeGroup && activeGroup !== 'bottom'}>{botBarZs.map((z, i) => {
         const pts = botBarPath.map(p => new THREE.Vector3(p.x, p.y, z));
         return (
           <TubeBar key={`bot-${i}`} path={pts} diameter={botR.diameter}
             color={COLOR_STAIR_BOTTOM} hiColor={COLOR_STAIR_BOTTOM_HI}
             info={botInfo} selected={isSelected('stairBottom')} onSelect={onSelect} />
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══ 上部纵筋 ═══ */}
-      {gv('top') && topBarZs.map((z, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('top')} dim={!!activeGroup && activeGroup !== 'top'}>{topBarZs.map((z, i) => {
         const ptsLow = topBarPaths.low.map(p => new THREE.Vector3(p.x, p.y, z));
         const ptsHigh = topBarPaths.high.map(p => new THREE.Vector3(p.x, p.y, z));
         return (
@@ -729,10 +734,10 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
               info={topInfo} selected={isSelected('stairTop')} onSelect={onSelect} />
           </group>
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══ 分布筋 ═══ */}
-      {gv('dist') && distBarPositions.map((pos, i) => {
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('dist')} dim={!!activeGroup && activeGroup !== 'dist'}>{distBarPositions.map((pos, i) => {
         const cvDistBot = pos.isFlat
           ? cover + botR.diameter * S + distR.diameter * S / 2
           : (cover + botR.diameter * S + distR.diameter * S / 2) / Math.cos(angle);
@@ -753,7 +758,7 @@ function BTStairScene({ params, selected, onSelect, concreteOpacity, visibleGrou
               info={distInfo} selected={isSelected('stairDist')} onSelect={onSelect} />
           </group>
         );
-      })}
+      })}</ConstructionGroup>
 
       {/* ═══ 尺寸标注 ═══ */}
       {showDimensions && (
@@ -805,12 +810,12 @@ export default function StairViewer({ params }: { params: StairParams }) {
   const [showDimensions, setShowDimensions] = useState(false);
   const [showCut, setShowCut] = useState(false);
   const [cutPosition, setCutPosition] = useState<number | null>(null);
-  const [animating, setAnimating] = useState(false);
-  const [step, setStep] = useState(STAIR_CONSTRUCTION_STEPS.length - 1);
-  const [autoPlay, setAutoPlay] = useState(false);
+  const constructionStages = useMemo(() => stairConstructionSteps(), []);
+  const playback = useConstructionPlayback(constructionStages);
+  const { state: animation, send: animationAction } = playback;
+  const animating = animation.open;
   const { isFullscreen, toggle: toggleFullscreen, containerRef: viewerContainerRef, containerClass: fsClass } = useFullscreen();
 
-  const visibleGroups = animating ? STAIR_CONSTRUCTION_STEPS[step].groups : null;
 
   // 相机目标中心
   const totalRise = params.stepCount * params.stepHeight * S;
@@ -842,14 +847,10 @@ export default function StairViewer({ params }: { params: StairParams }) {
     resetView: () => setCameraTarget([centerX + 3, centerY + 2, 3]),
     toggleDimensions: () => setShowDimensions(d => !d),
     takeScreenshot,
-    toggleAnimation: () => {
-      if (animating) {
-        setAutoPlay(a => !a);
-      } else {
-        setStep(0);
-        setAnimating(true);
-      }
-    },
+    toggleAnimation: () => animationAction({ type: 'toggle' }),
+    previousStep: animating ? () => animationAction({ type: 'seek', step: animation.step - 1 }) : undefined,
+    nextStep: animating ? () => animationAction({ type: 'seek', step: animation.step + 1 }) : undefined,
+    exitAnimation: animating ? () => animationAction({ type: 'exit' }) : undefined,
     setViewPreset: (preset) => {
       const presets: Record<string, [number, number, number]> = {
         front: [centerX, centerY, 4],
@@ -859,21 +860,10 @@ export default function StairViewer({ params }: { params: StairParams }) {
       };
       setCameraTarget(presets[preset] || presets.iso);
     },
-  }), [centerX, centerY, animating, takeScreenshot]);
+  }), [centerX, centerY, animating, animation.step, animationAction, takeScreenshot]);
 
   useKeyboard(keyBindings);
 
-  // 自动播放
-  useEffect(() => {
-    if (!autoPlay || !animating) return;
-    const id = setInterval(() => {
-      setStep(s => {
-        if (s >= STAIR_CONSTRUCTION_STEPS.length - 1) { setAutoPlay(false); return s; }
-        return s + 1;
-      });
-    }, 2000);
-    return () => clearInterval(id);
-  }, [autoPlay, animating]);
 
   return (
     <div className="rv-viewer" data-viewer="stair">
@@ -892,7 +882,7 @@ export default function StairViewer({ params }: { params: StairParams }) {
           {showDimensions ? '隐藏标注' : '尺寸标注'}
         </button>
         <button
-          onClick={() => { setAnimating(a => { if (a) { setAutoPlay(false); } else { setStep(0); } return !a; }); }}
+          onClick={() => animationAction({ type: animating ? 'exit' : 'enter' })}
           className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${animating ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           {animating ? '退出动画' : '施工动画'}
@@ -914,21 +904,7 @@ export default function StairViewer({ params }: { params: StairParams }) {
       </div>
 
       {/* ═══ 施工动画时间轴 ═══ */}
-      {animating && (
-        <div className="flex items-center gap-3 bg-white rounded-lg border border-emerald-200 px-4 py-2">
-          <button onClick={() => setStep(s => Math.max(0, s - 1))} disabled={step <= 0}
-            className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">◀</button>
-          <input type="range" min={0} max={STAIR_CONSTRUCTION_STEPS.length - 1} step={1} value={step}
-            onChange={e => setStep(parseInt(e.target.value))} className="flex-1 accent-emerald-500" />
-          <button onClick={() => setStep(s => Math.min(STAIR_CONSTRUCTION_STEPS.length - 1, s + 1))} disabled={step >= STAIR_CONSTRUCTION_STEPS.length - 1}
-            className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">▶</button>
-          <button onClick={() => { if (!autoPlay) setStep(s => Math.min(s, STAIR_CONSTRUCTION_STEPS.length - 2)); setAutoPlay(a => !a); }}
-            className={`px-2 py-1 rounded text-xs font-medium cursor-pointer ${autoPlay ? 'bg-emerald-500 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}>
-            {autoPlay ? '⏸' : '▶ 自动'}
-          </button>
-          <span className="text-xs text-muted whitespace-nowrap">{step + 1}/{STAIR_CONSTRUCTION_STEPS.length} {STAIR_CONSTRUCTION_STEPS[step].label}</span>
-        </div>
-      )}
+      {!isFullscreen && <ConstructionTimeline playback={playback} />}
 
       {/* ═══ 剖切位置滑块 ═══ */}
       {showCut && (
@@ -942,6 +918,7 @@ export default function StairViewer({ params }: { params: StairParams }) {
 
       {/* ═══ 3D 画布 ═══ */}
       <div ref={viewerContainerRef} className={`rv-viewer-canvas relative w-full bg-surface overflow-hidden ${fsClass}`}>
+        {isFullscreen && <div className="rv-construction-fullscreen"><ConstructionTimeline playback={playback} /></div>}
         {selected && <InfoTooltip info={selected} />}
 
         <ViewerControls views={[
@@ -953,15 +930,18 @@ export default function StairViewer({ params }: { params: StairParams }) {
           fullscreen={isFullscreen} onFullscreen={toggleFullscreen} />
 
         <Canvas camera={{ position: [centerX + 3, centerY + 2, 3], fov: 45 }} scene={{ background: new THREE.Color('#071725') }}>
-          <FittedCamera targetPosition={cameraTarget} initialPosition={[centerX + 3, centerY + 2, 3]} center={[centerX, centerY, 0]} bounds={[totalRun + botFlat + (params.topPlatformLen + params.botPlatformLen + params.beamB * 2) * S, totalRise + .8, params.flightWidth * S]} />
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[5, 8, 5]} intensity={0.8} castShadow />
+          <FittedCamera targetPosition={cameraTarget} initialPosition={[centerX + 3, centerY + 2, 3]} center={[centerX, centerY, 0]} smooth bounds={animating && playback.focus
+            ? [totalRun + botFlat + params.beamB * S, totalRise + .4, params.flightWidth * S]
+            : [totalRun + botFlat + (params.topPlatformLen + params.botPlatformLen + params.beamB * 2) * S, totalRise + .8, params.flightWidth * S]} />
+          <ambientLight intensity={0.9} />
+          <directionalLight position={[5, 8, 5]} intensity={1.5} castShadow />
+          <directionalLight position={[-3, 3, -4]} color="#8ddaf0" intensity={0.8} />
           {params.stairType === 'BT'
             ? <BTStairScene params={params} selected={selected} onSelect={setSelected}
-                concreteOpacity={concreteOpacity} visibleGroups={visibleGroups}
+                concreteOpacity={concreteOpacity} visibleGroups={playback.visibleGroups ?? null} activeGroup={playback.activeGroup}
                 showDimensions={showDimensions} cutPosition={cutPosition} />
             : <ATStairScene params={params} selected={selected} onSelect={setSelected}
-                concreteOpacity={concreteOpacity} visibleGroups={visibleGroups}
+                concreteOpacity={concreteOpacity} visibleGroups={playback.visibleGroups ?? null} activeGroup={playback.activeGroup}
                 showDimensions={showDimensions} cutPosition={cutPosition} />}
           <Grid args={[20, 20]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={15} />
           <axesHelper args={[0.5]} />

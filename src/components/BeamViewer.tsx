@@ -1,5 +1,10 @@
 'use client';
 
+import { ConstructionTimeline } from './ConstructionTimeline';
+import { ConstructionGroup } from './three/ConstructionGroup';
+import { useConstructionPlayback } from '@/lib/useConstructionPlayback';
+import { beamConstructionSteps } from '@/lib/construction-playback';
+
 import { beamLongitudinalLayout, BEAM_BAR_NAMES } from '@/lib/beam-longitudinal';
 import type { BeamBarRole } from '@/lib/beam-longitudinal';
 import { ViewerControls } from './ViewerControls';
@@ -22,7 +27,6 @@ import {
   COLOR_ERECTION, COLOR_ERECTION_HI,
   COLOR_HAUNCH, COLOR_HAUNCH_HI,
   COLOR_SIDEBAR, COLOR_SIDEBAR_HI,
-  BEAM_CONSTRUCTION_STEPS,
 } from '@/lib/constants';
 
 // Beam workspace palette; geometry and engineering color groups remain independent.
@@ -199,10 +203,10 @@ function formatSideBarAnchorDesc(prefix: 'G' | 'N', anchor: ReturnType<typeof ca
   return formatAnchorDesc(anchor);
 }
 
-function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, showDimensions, visibleGroups, renderMode }: {
+function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, showDimensions, visibleGroups, activeGroup, renderMode }: {
   params: BeamParams; selected: RebarMeshInfo | null;
   onSelect: (info: RebarMeshInfo | null) => void; cutPosition: number | null; concreteOpacity: number;
-  showDimensions: boolean; visibleGroups?: Set<string>; renderMode: RebarRenderMode;
+  showDimensions: boolean; visibleGroups?: Set<string>; activeGroup: string | null; renderMode: RebarRenderMode;
 }) {
   const bm = params.b * S;
   const hm = params.h * S;
@@ -375,7 +379,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
       })}
 
       {/* Beam concrete body — per-span to support variable widths */}
-      <group visible={gv('concrete')}>
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('concrete')} dim={!!activeGroup && activeGroup !== ('concrete')} reference>
       {spanLayouts.map((span, si) => (
         <group key={`beam-body-${si}`}>
           <mesh position={[span.center, hm / 2, 0]}>
@@ -404,7 +408,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
           )}
         </group>
       ))}
-      </group>
+      </ConstructionGroup>
 
       {/* Every longitudinal row uses its own physical bend plane at both ends. */}
       {longitudinal.rows.map(row => {
@@ -419,7 +423,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
         const info = {type:row.role, label:`${BEAM_BAR_NAMES[row.role]} · 第${row.row+1}排`,
           detail:`${row.count}根 ${gradeLabel(row.grade)} Φ${row.diameter}，${formatAnchorDesc(a)}`,
           setId:`beam.${row.role}.row${row.row}`};
-        return <group key={`${row.role}-${row.row}`} visible={gv(through?row.role:'support')}>
+        return <ConstructionGroup key={`${row.role}-${row.row}`} enabled={!!visibleGroups} visible={gv(through?row.role:'support')} dim={!!activeGroup && activeGroup !== (through?row.role:'support')}>
           {row.zs.map((z,i) => <group key={i}>
             <RebarBar position={[bodyX,row.y,z]} length={bodyLength} diameter={row.diameter}
               color={color} hiColor={hiColor} info={info} selected={isSelected(row.role, info.setId)} onSelect={onSelect} renderMode={renderMode} />
@@ -432,7 +436,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
                   diameter={row.diameter} direction={row.role==='bottom'?'up':'down'} xDir={sign}
                   color={color} hiColor={hiColor} info={info} selected={isSelected(row.role, info.setId)} onSelect={onSelect} renderMode={renderMode} />)}
           </group>)}
-        </group>;
+        </ConstructionGroup>;
       })}
 
       {/* ====== Per-span elements (support bars, erection bars) ====== */}
@@ -447,7 +451,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
         const hasInnerLeftSupport = si > 0 && !!innerR;
         const hasInnerRightSupport = si < spanCount - 1 && !!innerR;
         return (
-        <group key={`span-se-${si}`} position={[span.center, 0, 0]} visible={gv('support')}>
+        <ConstructionGroup key={`span-se-${si}`} position={[span.center, 0, 0]} enabled={!!visibleGroups} visible={gv('support')} dim={!!activeGroup && activeGroup !== ('support')}>
           {/* Erection bars (架立筋) */}
           {(leftR || rightR || innerR || params.erectionBar) && (() => {
             const erUser = params.erectionBar ? parseRebar(params.erectionBar) : null;
@@ -543,7 +547,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
               ...lapZones,
             ];
           })()}
-        </group>
+        </ConstructionGroup>
         );
       })}
 
@@ -573,11 +577,11 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
             );
           });
         }
-        return <group visible={gv('support')}>{nodes}</group>;
+        return <ConstructionGroup enabled={!!visibleGroups} visible={gv('support')} dim={!!activeGroup && activeGroup !== ('support')}>{nodes}</ConstructionGroup>;
       })()}
 
       {/* Side bars (腰筋/抗扭筋) - G前缀构造腰筋, N前缀抗扭筋 */}
-      <group visible={gv('sideBar')}>
+      <ConstructionGroup enabled={!!visibleGroups} visible={gv('sideBar')} dim={!!activeGroup && activeGroup !== ('sideBar')}>
       {sideInfo && (() => {
         const perSide = Math.ceil(sideInfo.count / 2); // 每侧根数 (总数/2，两侧对称)
         const sideDia = sideInfo.diameter;
@@ -683,13 +687,13 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
         return bars;
       })()}
 
-      </group>
+      </ConstructionGroup>
 
       {/* ====== Per-span elements (tie bars, stirrups) ====== */}
       {spanLayouts.map((span, si) => (
         <group key={`span-ts-${si}`} position={[span.center, 0, 0]}>
           {/* Tie bars (拉筋) */}
-          <group visible={gv('tieBar')}>
+          <ConstructionGroup enabled={!!visibleGroups} visible={gv('tieBar')} dim={!!activeGroup && activeGroup !== ('tieBar')}>
           {sideInfo && memoTieCurve && (() => {
             const perSide = Math.ceil(sideInfo.count / 2);
             const sideDia = sideInfo.diameter;
@@ -749,9 +753,9 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
             return tieBars;
           })()}
 
-          </group>
+          </ConstructionGroup>
           {/* Stirrups */}
-          <group visible={gv('stirrup')}>
+          <ConstructionGroup enabled={!!visibleGroups} visible={gv('stirrup')} dim={!!activeGroup && activeGroup !== ('stirrup')}>
           {(stirrupsPerSpan[si] || []).map((s, i) => {
             const zoneColor = s.zone === 'dense' ? COLOR_STIRRUP_DENSE : COLOR_STIRRUP_NORMAL;
             const zoneHiColor = s.zone === 'dense' ? COLOR_STIRRUP_DENSE_HI : COLOR_STIRRUP_NORMAL_HI;
@@ -787,13 +791,13 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
                 selected={isSelected('stirrup', setId)} onSelect={onSelect} renderMode={renderMode} />
             );
           })}
-          </group>
+          </ConstructionGroup>
         </group>
       ))}
 
       {/* Haunch additional bars (附加筋) and haunch zone stirrups — per-span */}
       {spanLayouts.map((span, si) => (
-        <group key={`span-haunch-${si}`} position={[span.center, 0, 0]} visible={gv('haunch')}>
+        <ConstructionGroup key={`span-haunch-${si}`} position={[span.center, 0, 0]} enabled={!!visibleGroups} visible={gv('haunch')} dim={!!activeGroup && activeGroup !== ('haunch')}>
       {haunchType === 'vertical' && (() => {
         // 22G101-1 2-36: 竖向加腋构造
         // 附加筋: 柱内水平锚固(≥laE) → 沿加腋斜面延伸穿入梁内(≥laE)
@@ -972,7 +976,7 @@ function BeamScene({ params, selected, onSelect, cutPosition, concreteOpacity, s
         });
         return haunchBars;
       })()}
-        </group>
+        </ConstructionGroup>
       ))}
 
       {/* 尺寸标注 */}
@@ -1339,9 +1343,10 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
     return null;
   }, [currentSelected, highlightedType]);
   const [cameraTarget, setCameraTarget] = useState<[number, number, number] | null>(null);
-  const [animating, setAnimating] = useState(false);
-  const [step, setStep] = useState(BEAM_CONSTRUCTION_STEPS.length - 1);
-  const [autoPlay, setAutoPlay] = useState(false);
+  const constructionStages = useMemo(() => beamConstructionSteps(params), [params]);
+  const playback = useConstructionPlayback(constructionStages);
+  const { state: animation, send: animationAction } = playback;
+  const animating = animation.open;
   const { isFullscreen: fsActive, toggle: fsToggle, containerRef: fsContainerRef, containerClass: fsClass } = useFullscreen();
 
   // 截图函数
@@ -1361,14 +1366,10 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
     resetView: () => setCameraTarget([3 * camScale, 2 * camScale, 4 * camScale]),
     toggleDimensions: () => setShowDimensions(d => !d),
     takeScreenshot,
-    toggleAnimation: () => {
-      if (animating) {
-        setAutoPlay(a => !a);
-      } else {
-        setStep(0);
-        setAnimating(true);
-      }
-    },
+    toggleAnimation: () => animationAction({ type: 'toggle' }),
+    previousStep: animating ? () => animationAction({ type: 'seek', step: animation.step - 1 }) : undefined,
+    nextStep: animating ? () => animationAction({ type: 'seek', step: animation.step + 1 }) : undefined,
+    exitAnimation: animating ? () => animationAction({ type: 'exit' }) : undefined,
     setViewPreset: (preset) => {
       const presets: Record<string, [number, number, number]> = {
         front: [0, 0.3 * camScale, 5 * camScale],
@@ -1378,23 +1379,11 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
       };
       setCameraTarget(presets[preset] || presets.iso);
     },
-  }), [camScale, animating, takeScreenshot]);
+  }), [camScale, animating, animation.step, animationAction, takeScreenshot]);
 
   useKeyboard(keyBindings);
 
-  // Auto-play timer
-  useEffect(() => {
-    if (!autoPlay || !animating) return;
-    const id = setInterval(() => {
-      setStep(s => {
-        if (s >= BEAM_CONSTRUCTION_STEPS.length - 1) { setAutoPlay(false); return s; }
-        return s + 1;
-      });
-    }, 2000);
-    return () => clearInterval(id);
-  }, [autoPlay, animating]);
 
-  const visibleGroups = animating ? BEAM_CONSTRUCTION_STEPS[step].groups : undefined;
 
   // 根据选中钢筋类型计算附加数据
   const selectedAdditionalData = useMemo(() => {
@@ -1604,7 +1593,7 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
           {showDimensions ? '隐藏标注' : '尺寸标注'}
         </button>
         <button
-          onClick={() => { setAnimating(a => { if (a) { setAutoPlay(false); } else { setStep(0); } return !a; }); }}
+          onClick={() => animationAction({ type: animating ? 'exit' : 'enter' })}
           className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${animating ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/20' : 'bg-white border border-gray-200 text-muted hover:bg-gray-50 hover:border-gray-300'}`}>
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           {animating ? '退出动画' : '施工动画'}
@@ -1641,21 +1630,7 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
       </div>
       {showHookDetail && <StirrupHookDetail params={params} onClose={() => setShowHookDetail(false)} />}
 
-      {animating && (
-        <div className="flex items-center gap-3 bg-white rounded-lg border border-emerald-200 px-4 py-2">
-          <button onClick={() => setStep(s => Math.max(0, s - 1))} disabled={step <= 0}
-            className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">◀</button>
-          <input type="range" min={0} max={BEAM_CONSTRUCTION_STEPS.length - 1} step={1} value={step}
-            onChange={e => setStep(parseInt(e.target.value))} className="flex-1 accent-emerald-500" />
-          <button onClick={() => setStep(s => Math.min(BEAM_CONSTRUCTION_STEPS.length - 1, s + 1))} disabled={step >= BEAM_CONSTRUCTION_STEPS.length - 1}
-            className="px-2 py-1 rounded text-xs font-medium cursor-pointer bg-gray-100 hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">▶</button>
-          <button onClick={() => { if (!autoPlay) setStep(s => Math.min(s, BEAM_CONSTRUCTION_STEPS.length - 2)); setAutoPlay(a => !a); }}
-            className={`px-2 py-1 rounded text-xs font-medium cursor-pointer ${autoPlay ? 'bg-emerald-500 text-white' : 'bg-gray-100 hover:bg-gray-200'}`}>
-            {autoPlay ? '⏸' : '▶ 自动'}
-          </button>
-          <span className="text-xs text-muted whitespace-nowrap">{step + 1}/{BEAM_CONSTRUCTION_STEPS.length} {BEAM_CONSTRUCTION_STEPS[step].label}</span>
-        </div>
-      )}
+      {!fsActive && <ConstructionTimeline playback={playback} />}
 
       {showCut && (
         <div className="flex items-center gap-3 bg-white rounded-lg border border-gray-200 px-4 py-2">
@@ -1667,6 +1642,7 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
       )}
 
       <div ref={fsContainerRef} className={`rv-viewer-canvas relative w-full overflow-hidden ${fsActive ? fsClass : ''}`}>
+        {fsActive && <div className="rv-construction-fullscreen"><ConstructionTimeline playback={playback} /></div>}
         {currentSelected && <RebarDetailPanel info={currentSelected} onClose={() => setCurrentSelected(null)} additionalData={selectedAdditionalData} />}
 
         {/* Toolbar overlay */}
@@ -1687,7 +1663,7 @@ export default function BeamViewer({ params, cutPosition, showCut, onCutPosition
             <Lightformer form="rect" intensity={3} position={[0, 5, 0]} rotation={[Math.PI / 2, 0, 0]} scale={[10, 10, 1]} />
             <Lightformer form="rect" intensity={2} color="#d6f4ff" position={[0, 2, 5]} rotation={[0, Math.PI, 0]} scale={[12, 4, 1]} />
           </Environment>
-          <BeamScene params={params} selected={effectiveSelected} onSelect={setCurrentSelected} cutPosition={cutPosition} concreteOpacity={concreteOpacity} showDimensions={showDimensions} visibleGroups={visibleGroups} renderMode={renderMode} />
+          <BeamScene params={params} selected={effectiveSelected} onSelect={setCurrentSelected} cutPosition={cutPosition} concreteOpacity={concreteOpacity} showDimensions={showDimensions} visibleGroups={playback.visibleGroups} activeGroup={playback.activeGroup} renderMode={renderMode} />
           <Grid args={[gridSize, gridSize]} position={[0, -0.01, 0]} cellColor="#15384f" sectionColor="#215a72" fadeDistance={gridSize * 1.5} />
           <axesHelper args={[1]} />
           <OrbitControls target={[0, hm / 2, 0]} enableDamping dampingFactor={0.1} />
