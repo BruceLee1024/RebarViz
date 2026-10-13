@@ -21,7 +21,14 @@ export function getApiKeys(): ApiKeyStore {
   if (typeof window === 'undefined') return {};
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (raw) return JSON.parse(raw);
+    // Auto-populate default keys on first load
+    const defaults: ApiKeyStore = {
+      deepseek: process.env.DEEPSEEK_API_KEY || '',
+      siliconflow: process.env.SILICONFLOW_API_KEY || '',
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+    return defaults;
   } catch {
     return {};
   }

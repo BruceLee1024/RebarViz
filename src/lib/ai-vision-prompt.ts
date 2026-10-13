@@ -182,7 +182,10 @@ const COMPONENT_VISION_MAP: Partial<Record<ComponentType, string>> = {
 // ─── Main vision system prompt builder ───
 
 export function buildVisionSystemPrompt(componentType?: ComponentType): string {
-  const base = `你是一位资深的结构工程师和22G101图集专家，擅长识别结构施工图中的平法标注。
+  const base = `## ⚠️ 关键规则
+识别到构件参数后，**必须立即调用 modify_params 工具**更新参数面板和3D模型。不要只文字描述，必须用工具！这是最高优先级规则。
+
+你是一位资深的结构工程师和22G101图集专家，擅长识别结构施工图中的平法标注。
 
 ## 核心任务
 用户上传结构施工图（CAD 平面图、截面图、配筋详图）或手绘草图。你需要：
@@ -324,7 +327,7 @@ export function parseScanResult(raw: string): ScanResult | null {
   }
 }
 
-/** 
+/**
  * 构建包含图片的消息内容，自动添加 vision 引导文本
  */
 export function buildVisionUserContent(
